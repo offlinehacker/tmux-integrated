@@ -233,6 +233,60 @@ Write-queue invariants:
 * For Remote-SSH/WSL: the extension declares `extensionKind: "workspace"` so
   tmux always runs on the same host as the user's processes.
 
+## Latency hazards (and how we guard against them)
+
+Two reported failure modes were traced to races that high-latency Remote-SSH
+sessions amplify. Both are documented here so we don't regress them.
+
+### "A fresh tmux window appears every time VS Code reconnects"
+
+Three things compound:
+
+1. **Concurrent `ensureClientConnected()` calls overwrote the in-flight
+   client.** `autoConnectExistingSession()` is fire-and-forget from
+   `activate()`. While `connect()` is mid-handshake, `client.isConnected()`
+   returns `false` (the `_connected` flag is only set on `_ready`). Any
+   second caller — typically `provideTerminalProfile` triggered by VS Code
+   restoring a tab — would fall through and execute
+   `client = new TmuxControlClient(...)`, orphaning the original PTY.
+   *Mitigation:* `ensureClientConnected()` now memoises an in-flight promise
+   so all callers await the same attempt.
+2. **`windowsToAdopt` was a global queue that two paths raced to drain.**
+   `autoConnect` snapshotted-and-cleared the queue, while
+   `adoptNextWindow()` `shift()`-ed one and then cleared the rest. Whoever
+   ran first won; the loser saw an empty queue and fell through to
+   `client.newWindow(...)` — a fresh tmux window. *Mitigation:*
+   `adoptNextWindow()` now only shifts a single entry and never clears the
+   tail. `autoConnectExistingSession()` waits a short grace period after
+   connect so that any `provideTerminalProfile` calls VS Code makes during
+   restore get first dibs; only the leftover windows are then adopted by
+   autoConnect.
+3. **`adoptNextWindow()` cleared the queue after the first shift.** Even
+   without autoConnect in the picture, if VS Code restored N profile-based
+   tabs concurrently it would call `provideTerminalProfile` N times in
+   quick succession; only the first found something to adopt. *Mitigation:*
+   covered by the "shift one, never clear the tail" change above.
+
+### "Tabs get renamed to 'zsh' or 'bash' on reconnect"
+
+`TmuxTerminal.open()` registers `windowRenamedListener` early (correct —
+we mustn't drop events) and only later issues `set-option -w
+automatic-rename off`. tmux can emit `%window-renamed @id zsh` from its own
+automatic-rename feature in the gap between those two steps. The listener
+processed those events as if they were intentional renames, so the VS Code
+tab title became "zsh" / "bash" / whatever the foreground process happened
+to be. The race window is sub-millisecond locally but seconds-wide over a
+laggy SSH tunnel.
+
+*Mitigations:*
+
+* An `initialNameCommitted` guard suppresses the listener until `open()`
+  has settled the title. After commit the listener works normally so
+  user-initiated `rename-window` from inside tmux still updates the tab.
+* `name` and `automaticRename` are now propagated all the way from
+  `listWindows()` into `existingWindow`, so on reconnect we don't need a
+  fresh round-trip just to find out what the window is called.
+
 ## Things that are intentionally absent
 
 * **Splits.** Mapping `split-window` onto `vscode.Pseudoterminal` is not

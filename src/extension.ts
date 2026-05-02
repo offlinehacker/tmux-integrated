@@ -24,6 +24,8 @@ interface AttachWindowItem extends vscode.QuickPickItem {
     windowId: string;
     paneId: string;
     windowIndex: number;
+    name: string;
+    automaticRename: boolean;
 }
 
 let client: TmuxControlClient | null = null;
@@ -34,9 +36,28 @@ let currentSessionName = 'vscode';
 let tmuxBinaryPath: string | null = null;
 let extensionRootPath = process.cwd();
 let defaultStartDirectory = process.cwd();
-let bootstrapWindow: { windowId: string; paneId: string; windowIndex: number } | null = null;
-let windowsToAdopt: { windowId: string; paneId: string; windowIndex: number }[] = [];
+interface AdoptableWindow {
+    windowId: string;
+    paneId: string;
+    windowIndex: number;
+    name?: string;
+    automaticRename?: boolean;
+}
+let bootstrapWindow: AdoptableWindow | null = null;
+let windowsToAdopt: AdoptableWindow[] = [];
 let disposing = false;
+/**
+ * In-flight ensureClientConnected promise.
+ *
+ * Multiple call-sites (autoConnect on activation, provideTerminalProfile on
+ * VS Code restoring tabs, the user opening a terminal) can race to connect
+ * during a high-latency reattach. Without serialisation a second caller
+ * would see _connected=false (the handshake has not finished) and execute
+ * `client = new TmuxControlClient(...)`, orphaning the in-flight PTY and
+ * spawning a duplicate tmux process. Memoising the promise makes every
+ * concurrent caller wait for the same attempt.
+ */
+let inFlightConnect: Promise<boolean> | null = null;
 const attachedWindowIds = new Set<string>();
 const terminalPtyByTerminal = new Map<vscode.Terminal, TmuxTerminal>();
 const pendingTerminalPtys: TmuxTerminal[] = [];
@@ -74,6 +95,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             terminalPtyByTerminal.clear();
             pendingTerminalPtys.length = 0;
             activeTmuxWindowId = null;
+            inFlightConnect = null;
             client?.disconnect();
             client = null;
         },
@@ -95,6 +117,7 @@ export function deactivate(): void {
     terminalPtyByTerminal.clear();
     pendingTerminalPtys.length = 0;
     activeTmuxWindowId = null;
+    inFlightConnect = null;
     client?.disconnect();
     client = null;
 }
@@ -262,6 +285,18 @@ function registerCommands(context: vscode.ExtensionContext): void {
 }
 
 async function ensureClientConnected(): Promise<boolean> {
+    if (inFlightConnect) {
+        return inFlightConnect;
+    }
+    inFlightConnect = ensureClientConnectedImpl();
+    try {
+        return await inFlightConnect;
+    } finally {
+        inFlightConnect = null;
+    }
+}
+
+async function ensureClientConnectedImpl(): Promise<boolean> {
     if (client?.isConnected()) {
         // Verify the control-mode connection is actually alive.
         try {
@@ -350,7 +385,13 @@ async function ensureClientConnected(): Promise<boolean> {
             const windows = await client.listWindows();
             log(`New session — found ${windows.length} bootstrap window(s)`);
             if (windows.length === 1) {
-                bootstrapWindow = { windowId: windows[0].id, paneId: windows[0].paneId, windowIndex: windows[0].index };
+                bootstrapWindow = {
+                    windowId: windows[0].id,
+                    paneId: windows[0].paneId,
+                    windowIndex: windows[0].index,
+                    name: windows[0].name,
+                    automaticRename: windows[0].automaticRename,
+                };
             }
         } catch (err) {
             log(`bootstrap window lookup failed: ${err}`);
@@ -359,7 +400,15 @@ async function ensureClientConnected(): Promise<boolean> {
         try {
             const windows = await client.listWindows();
             log(`Existing session — found ${windows.length} window(s) to adopt`);
-            windowsToAdopt = windows.map(w => ({ windowId: w.id, paneId: w.paneId, windowIndex: w.index }));
+            // Carry name + automaticRename through so TmuxTerminal.open()
+            // does not need fresh round-trips on a high-latency link.
+            windowsToAdopt = windows.map(w => ({
+                windowId: w.id,
+                paneId: w.paneId,
+                windowIndex: w.index,
+                name: w.name,
+                automaticRename: w.automaticRename,
+            }));
         } catch (err) {
             log(`window enumeration failed: ${err}`);
         }
@@ -391,7 +440,7 @@ async function ensureClientConnected(): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 function buildTerminalOptions(
-    existingWindow?: { windowId: string; paneId: string; windowIndex?: number },
+    existingWindow?: AdoptableWindow,
 ): vscode.ExtensionTerminalOptions {
     const cfg = vscode.workspace.getConfiguration('tmux-integrated');
     const shell = (cfg.get<string>('shell') || process.env.SHELL || '/bin/bash') || undefined;
@@ -422,39 +471,36 @@ function buildTerminalOptions(
 }
 
 function buildTerminalProfile(
-    existingWindow?: { windowId: string; paneId: string; windowIndex?: number },
+    existingWindow?: AdoptableWindow,
 ): vscode.TerminalProfile {
     return new vscode.TerminalProfile(buildTerminalOptions(existingWindow));
 }
 
-function takeBootstrapWindow(): { windowId: string; paneId: string; windowIndex: number } | undefined {
+function takeBootstrapWindow(): AdoptableWindow | undefined {
     const bw = bootstrapWindow;
     bootstrapWindow = null;
     return bw ?? undefined;
 }
 
 /**
- * Claim the next pre-existing window for re-adoption.  The first call returns
- * the window to use for the current provideTerminalProfile request; any
- * remaining windows are scheduled to appear as additional VS Code tabs.
+ * Pop one pre-existing window off the adoption queue, skipping any entries
+ * already claimed by a concurrent caller.
+ *
+ * Each call hands back a single window so that N concurrent
+ * provideTerminalProfile invocations (e.g. when VS Code restores N tabs at
+ * once on a Remote-SSH reconnect) each adopt one window instead of the
+ * first call clearing the tail and forcing the rest into "create a fresh
+ * tmux window" fallback. autoConnectExistingSession() mops up whatever is
+ * left after a short grace period.
  */
-function adoptNextWindow(): { windowId: string; paneId: string; windowIndex: number } | undefined {
-    if (windowsToAdopt.length === 0) { return undefined; }
-    const next = windowsToAdopt.shift()!;
-
-    if (windowsToAdopt.length > 0) {
-        const remaining = windowsToAdopt;
-        windowsToAdopt = [];
-        setTimeout(() => {
-            for (const w of remaining) {
-                if (!attachedWindowIds.has(w.windowId)) {
-                    vscode.window.createTerminal(buildTerminalOptions(w));
-                }
-            }
-        }, 100);
+function adoptNextWindow(): AdoptableWindow | undefined {
+    while (windowsToAdopt.length > 0) {
+        const next = windowsToAdopt.shift()!;
+        if (!attachedWindowIds.has(next.windowId)) {
+            return next;
+        }
     }
-
-    return next;
+    return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +533,8 @@ async function showAttachWindowPicker(sessionName: string): Promise<void> {
         windowId: w.id,
         paneId: w.paneId,
         windowIndex: w.index,
+        name: w.name,
+        automaticRename: w.automaticRename,
     }));
 
     const picked = await vscode.window.showQuickPick(items, {
@@ -499,6 +547,8 @@ async function showAttachWindowPicker(sessionName: string): Promise<void> {
             windowId: picked.windowId,
             paneId: picked.paneId,
             windowIndex: picked.windowIndex,
+            name: picked.name,
+            automaticRename: picked.automaticRename,
         }));
         terminal.show();
     }
@@ -600,7 +650,15 @@ function resolveTmuxBinaryPathSafe(): string | null {
 /**
  * Auto-connect to the existing tmux session for this workspace and
  * open each existing tmux window as a VS Code terminal tab.
+ *
+ * VS Code may also restore previously-open `tmux-integrated` profile tabs
+ * by calling provideTerminalProfile during/after activation. To avoid
+ * double-creating tabs (which on a high-latency reconnect would otherwise
+ * spawn fresh tmux windows alongside the adopted ones), we yield to those
+ * restore calls for a short grace period before mopping up whatever
+ * windows are still un-claimed.
  */
+const AUTO_CONNECT_GRACE_MS = 750;
 async function autoConnectExistingSession(): Promise<void> {
     log('Auto-connect: existing tmux session detected, connecting…');
     const connected = await ensureClientConnected();
@@ -609,21 +667,25 @@ async function autoConnectExistingSession(): Promise<void> {
         return;
     }
 
-    // ensureClientConnected() populated windowsToAdopt for existing sessions.
-    // Create a VS Code terminal tab for each window.
-    const windows = [...windowsToAdopt];
-    windowsToAdopt = [];
-    if (windows.length === 0) {
+    if (windowsToAdopt.length === 0) {
         log('Auto-connect: connected but no windows to adopt');
         return;
     }
 
-    log(`Auto-connect: adopting ${windows.length} existing window(s)`);
-    for (const w of windows) {
-        if (!attachedWindowIds.has(w.windowId)) {
-            vscode.window.createTerminal(buildTerminalOptions(w));
+    log(`Auto-connect: ${windowsToAdopt.length} window(s) to adopt — yielding ${AUTO_CONNECT_GRACE_MS}ms for VS Code restore`);
+    setTimeout(() => {
+        const remaining = windowsToAdopt.splice(0);
+        if (remaining.length === 0) {
+            log('Auto-connect: queue drained by VS Code restore — no extra tabs needed');
+            return;
         }
-    }
+        log(`Auto-connect: creating tabs for ${remaining.length} unclaimed window(s)`);
+        for (const w of remaining) {
+            if (!attachedWindowIds.has(w.windowId)) {
+                vscode.window.createTerminal(buildTerminalOptions(w));
+            }
+        }
+    }, AUTO_CONNECT_GRACE_MS);
 }
 
 function tmuxSessionExists(binaryPath: string, sessionName: string): boolean {

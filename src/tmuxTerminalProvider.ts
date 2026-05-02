@@ -170,6 +170,17 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
     private resizeTimer: ReturnType<typeof setTimeout> | null = null;
     private readonly log: (message: string) => void;
     private onInputCallback: (() => void) | null = null;
+    /**
+     * Becomes true only after open() has settled the initial tab title
+     * (queried/disabled automatic-rename, emitted the chosen label, and —
+     * if needed — issued our own rename-window). Until then,
+     * windowRenamedListener ignores incoming %window-renamed events so
+     * that tmux's automatic-rename-driven renames (e.g. to "zsh"/"bash")
+     * cannot race ahead of our suppression command on a high-latency
+     * link. After commit, the listener works normally so user-initiated
+     * renames from inside tmux still update the tab.
+     */
+    private initialNameCommitted = false;
 
     constructor(
         private readonly client: TmuxControlClient,
@@ -323,6 +334,16 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
                 if (!payload || payload.windowId !== this.windowId) {
                     return;
                 }
+                // Drop any %window-renamed event that arrives while open()
+                // is still settling the initial title. Without this guard,
+                // tmux's automatic-rename feature can fire e.g.
+                // %window-renamed @5 zsh in the brief window between our
+                // listener registration and our `set-option ... off`
+                // command landing — long enough on a laggy SSH tunnel that
+                // the tab title flips to "zsh"/"bash"/whatever.
+                if (!this.initialNameCommitted) {
+                    return;
+                }
                 this.emitNameIfChanged(
                     pickTerminalTabTitle(payload.name, this.tabWindowIndex, false),
                     'tmux',
@@ -339,26 +360,50 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
             };
             this.client.on('tmux-exit', this.tmuxExitListener);
 
-            {
-                // Ask tmux whether this window title is still auto-managed (no shell name list needed).
-                let automaticRename = await this.client.getWindowAutomaticRename(windowId).catch(() => undefined);
-                if (automaticRename === undefined && this.existingWindow?.automaticRename !== undefined) {
-                    automaticRename = this.existingWindow.automaticRename;
-                }
-                if (automaticRename === undefined && !this.existingWindow) {
-                    automaticRename = true;
+            try {
+                // Decide whether tmux is currently auto-renaming this
+                // window so we can pick the right starting label. Prefer
+                // the metadata carried in from list-windows / new-window
+                // so we don't burn a round-trip on a high-latency link.
+                let automaticRename: boolean | undefined =
+                    this.existingWindow?.automaticRename ?? targetWindow.automaticRename;
+                if (automaticRename === undefined) {
+                    if (this.existingWindow) {
+                        // Adoption path with no metadata (older caller):
+                        // query before we change anything.
+                        automaticRename = await this.client
+                            .getWindowAutomaticRename(windowId)
+                            .catch(() => undefined);
+                    } else {
+                        // Brand-new window: tmux's default is
+                        // automatic-rename on, so treat it as such even
+                        // without a round-trip.
+                        automaticRename = true;
+                    }
                 }
                 if (automaticRename === undefined) {
                     automaticRename = false;
                 }
+
+                // Now disable auto-rename so foreground-process changes
+                // don't keep flipping the title. Doing this *before* we
+                // emit the label means tmux's own auto-rename can no
+                // longer race past us, and the listener guard
+                // (initialNameCommitted) catches anything already in
+                // flight.
+                await this.client
+                    .sendCommand(
+                        `set-option -w -t ${windowId} automatic-rename off`,
+                        CommandFlags.TolerateErrors,
+                    )
+                    .catch(() => {});
 
                 let candidate = (this.existingWindow?.name ?? targetWindow.name ?? '').trim();
                 if (!candidate) {
                     candidate = (await this.client.getWindowName(windowId).catch(() => '')).trim();
                 }
                 const label = pickTerminalTabTitle(candidate || undefined, windowIndex, automaticRename);
-                // Stop tmux from rewriting the title after we commit integrate name or user name.
-                await this.client.sendCommand(`set-option -w -t ${windowId} automatic-rename off`).catch(() => {});
+
                 this.emitNameIfChanged(label, 'init');
                 const current = (await this.client.getWindowName(windowId).catch(() => '')).trim();
                 if (current !== label) {
@@ -369,6 +414,12 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
                         )
                         .catch(() => {});
                 }
+            } finally {
+                // From here on, %window-renamed events represent real
+                // renames (user typed `tmux rename-window foo` from a
+                // shell, or this extension's renameWindow command) and
+                // must update the VS Code tab.
+                this.initialNameCommitted = true;
             }
 
             if (initialDimensions && this.windowId) {
@@ -665,6 +716,7 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         this.lastEmittedName = null;
         this.lastTmuxDrivenName = null;
         this.lastTmuxDrivenNameAt = 0;
+        this.initialNameCommitted = false;
 
         if (this.windowId && this.attachedWindowNotified) {
             this.lifecycleHooks.onWindowDetached?.(this.windowId);
