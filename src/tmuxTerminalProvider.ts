@@ -169,6 +169,12 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
     private lastCharWasCR = false;
     private resizeTimer: ReturnType<typeof setTimeout> | null = null;
     private readonly log: (message: string) => void;
+    /**
+     * Set from `extension.ts` (`registerTerminalRenameSync`).  Invoked at the
+     * start of each `handleInput` so the extension can compare `terminal.name`
+     * to `getLastEmittedName()` and push a built-in "Rename…" to tmux via
+     * `syncNameToTmux`.  No VS Code API registers this; it is optional wiring.
+     */
     private onInputCallback: (() => void) | null = null;
 
     constructor(
@@ -250,7 +256,10 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         return this.lastEmittedName;
     }
 
-    /** Register a callback invoked on every handleInput — used to detect built-in renames. */
+    /**
+     * See `onInputCallback` field.  Called once per tracked terminal when the
+     * extension attaches rename-sync logic.
+     */
     setOnInputCallback(cb: () => void): void {
         this.onInputCallback = cb;
     }
@@ -404,6 +413,12 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         }
     }
 
+    /**
+     * `vscode.Pseudoterminal` — invoked by the VS Code extension host when the
+     * user types or pastes in this terminal (xterm forwards UTF-8 chunks here).
+     * You will not find call sites in this repo: the host calls it on the `pty`
+     * object passed to `vscode.window.createTerminal({ pty })`.
+     */
     handleInput(data: string): void {
         if (!this.paneId) { return; }
         this.onInputCallback?.();
@@ -457,6 +472,9 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
     // -----------------------------------------------------------------------
 
     /**
+     * Maps VS Code terminal input to tmux `send-keys`.  Entry point is only
+     * `handleInput` above (not dead code — grep does not see the host caller).
+     *
      * Send input to the tmux pane using the iTerm2 hybrid strategy:
      *   - Unknown ESC sequences (CSI, SS3, OSC, DCS, …) → single hex
      *     `send-keys -t <pane> 0x1b 0x5b …` so the whole sequence is

@@ -57,10 +57,10 @@ a persistent backing store via tmux **control mode** (`tmux -CC`).
 | File | Role |
 |---|---|
 | `src/extension.ts` | Activation, lifecycle, terminal-profile + command registration, autoConnect, status bar, env-var forwarding. |
-| `src/tmuxControlClient.ts` | High-level typed tmux operations (`newWindow`, `listWindows`, `resizeWindowForClient`, …), node-pty lifecycle, version gating. Wraps `TmuxGateway`. |
-| `src/tmuxGateway.ts` | Low-level control-mode protocol parser. Frames lines, handles `%begin/%end/%error`, manages the pending-command queue, defers writes until `%session-changed`, decodes `%output`/`%extended-output` payloads. |
 | `src/tmuxTerminalProvider.ts` | The `vscode.Pseudoterminal` (`TmuxTerminal`). Forwards user input to a tmux pane, renders pane output back into xterm.js, and owns the tab name. |
 | `src/windowTitle.ts` | Pure helpers that decide the VS Code tab title from tmux's `#{window_name}` and `#{automatic-rename}`. |
+| `src/tmuxControlClient.ts` | High-level typed tmux operations (`newWindow`, `listWindows`, `resizeWindowForClient`, …), node-pty lifecycle, version gating. Wraps `TmuxGateway`. |
+| `src/tmuxGateway.ts` | Low-level control-mode protocol parser. Frames lines, handles `%begin/%end/%error`, manages the pending-command queue, defers writes until `%session-changed`, decodes `%output`/`%extended-output` payloads. |
 
 ## Activation flow
 
@@ -107,7 +107,7 @@ Behaviour:
    * `windowsToAdopt[]` — when the session already existed; one entry per
      pre-existing tmux window.
 
-## Where new VS Code tabs come from
+## Where new terminal tabs come from
 
 There are three doorways into "create a VS Code terminal tab":
 
