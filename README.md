@@ -118,6 +118,8 @@ work exactly as they do in a normal VS Code terminal.
 
 Contributions are welcome — open an issue or submit a pull request.
 
+Maintainers: see [doc/RELEASE.md](doc/RELEASE.md) for version bumps, changelog generation, and marketplace publish.
+
 ## License
 
 This project is licensed under the **GNU General Public License v3.0 (GPL-3.0-only)**.
