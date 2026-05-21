@@ -667,18 +667,24 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         // Strip \ek<text>\e\\ — screen/tmux hardstatus title sequence.
         data = data.replace(/\x1bk[^\x1b]*\x1b\\/g, '');
 
-        let result = '';
-
-        for (let i = 0; i < data.length; i++) {
-            const ch = data[i];
-            if (ch === '\n' && !this.lastCharWasCR) {
-                result += '\r\n';
+        // Ensure bare LF is preceded by CR (xterm.js requirement).
+        // Use a single regex pass
+        let result : string;
+        if(this.lastCharWasCR) {
+            // Previous chunk ended with \r - first \n in this chunk is already
+            // preceded by CR, so skip it in the replacement
+            const firstLF = data.indexOf('\n');
+            if(firstLF === 0) {
+                result = data.substring(1).replace(/(?<!\r)\n/g, '\r\n');
+                result = '\n' + result;
             } else {
-                result += ch;
+                result = data.replace(/(?<!\r)\n/g, '\r\n');
             }
-            this.lastCharWasCR = (ch === '\r');
+        } else {
+            result = data.replace(/(?<!\r)\n/g, '\r\n');
         }
-
+        // Track whether this chunk ends with \r for the next call
+        this.lastCharWasCR = data.length > 0 && data[data.length - 1] === '\r';
         return result;
     }
 
