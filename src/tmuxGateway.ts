@@ -473,8 +473,11 @@ export class TmuxGateway extends EventEmitter {
  *     sprinkles in at its pleasure."
  */
 function decodeOutput(encoded: Buffer): Buffer {
-    const bytes: number[] = [];
-
+    //  Pre-allocate: decoded length is always <= encoded length (octal escapes
+    //  \NNN are 4 input bytes -> one output byte). A single allocUnsafe +
+    // slice is cheaper than a buffer
+    const out = Buffer.allocUnsafe(encoded.length);
+    let writePos = 0;
     for (let index = 0; index < encoded.length; ) {
         const code = encoded[index];
 
@@ -506,18 +509,18 @@ function decodeOutput(encoded: Buffer): Buffer {
                 scan++;
             }
             if (digits === 3) {
-                bytes.push(value);
+                out[writePos++] = value;
                 index = scan;
                 continue;
             }
             // Not a valid octal escape — fall through and emit '\' as-is.
         }
 
-        bytes.push(code);
+        out[writePos++] = code;
         index++;
     }
 
-    return Buffer.from(bytes);
+    return out.subarray(0, writePos);
 }
 
 function parseLayoutChange(line: string): TmuxLayoutChange | null {

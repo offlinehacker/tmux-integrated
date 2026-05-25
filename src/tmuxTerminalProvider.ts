@@ -473,7 +473,16 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
     handleInput(data: string): void {
         if (!this.paneId) { return; }
         this.onInputCallback?.();
-        this.sendKeysInput(data);
+        // Defence-in-depth: drop any DSR / DA / CPR replies that xterm.js
+        // still emits on its onData channel (e.g. for queries we didn't
+        // catch in normalizeTerminalOutput). These can never come from a
+        // human keyboard, so dropping them in input is safe.
+        //   CSI <private?> <params> R   → CPR response
+        //   CSI <private?> <params> n   → DSR response
+        //   CSI <private?> <params> c   → DA response
+        const filtered = data.replace(/\x1b\[[?>=<]?[\d;]*[Rnc]/g, '');
+        if (filtered.length === 0) { return; }
+        this.sendKeysInput(filtered);
     }
 
     setDimensions(dimensions: vscode.TerminalDimensions): void {
@@ -661,24 +670,49 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
      *      precmd when TERM matches screen* or tmux*.  xterm.js treats \ek as
      *      an unknown two-char escape and prints the enclosed text as visible
      *      characters, producing the "command echo" effect.
-     *   2. Ensure bare LF is preceded by CR (xterm.js requirement).
+     *   2. Strip terminal-status queries (DSR `\x1b[…n`, DA `\x1b[…c`) that
+     *      tmux itself already replies to from the pane's virtual screen
+     *      state (see tmux's input.c INPUT_CSI_DSR / INPUT_CSI_DA handlers).
+     *      Without this, xterm.js sees the query, emits its OWN cursor/DA
+     *      reply via onData, and that reply rides back through send-keys to
+     *      land in the program's stdin a moment after tmux's own reply —
+     *      leaking fragments like `;145R;56R` into the next `gh` prompt
+     *      (issue #26). default-terminal is `xterm-256color`, so programs
+     *      assume DSR works and query freely; the workaround of switching
+     *      TERM to tmux-256color avoids the queries but loses xterm-style
+     *      capabilities, hence we filter here instead.
+     *   3. Ensure bare LF is preceded by CR (xterm.js requirement).
      */
     private normalizeTerminalOutput(data: string): string {
         // Strip \ek<text>\e\\ — screen/tmux hardstatus title sequence.
         data = data.replace(/\x1bk[^\x1b]*\x1b\\/g, '');
 
-        let result = '';
+        // Strip DSR / DA queries that tmux already answers internally so
+        // xterm.js doesn't generate duplicate auto-responses on top.
+        //   CSI <private?> <params> n   → DSR (status / cursor position)
+        //   CSI <private?> <params> c   → DA  (device attributes)
+        // Final bytes 'n' and 'c' are exclusively query/response per
+        // ECMA-48; stripping them never affects rendered output.
+        data = data.replace(/\x1b\[[?>=<]?[\d;]*[nc]/g, '');
 
-        for (let i = 0; i < data.length; i++) {
-            const ch = data[i];
-            if (ch === '\n' && !this.lastCharWasCR) {
-                result += '\r\n';
+        // Ensure bare LF is preceded by CR (xterm.js requirement).
+        // Use a single regex pass
+        let result : string;
+        if(this.lastCharWasCR) {
+            // Previous chunk ended with \r - first \n in this chunk is already
+            // preceded by CR, so skip it in the replacement
+            const firstLF = data.indexOf('\n');
+            if(firstLF === 0) {
+                result = data.substring(1).replace(/(?<!\r)\n/g, '\r\n');
+                result = '\n' + result;
             } else {
-                result += ch;
+                result = data.replace(/(?<!\r)\n/g, '\r\n');
             }
-            this.lastCharWasCR = (ch === '\r');
+        } else {
+            result = data.replace(/(?<!\r)\n/g, '\r\n');
         }
-
+        // Track whether this chunk ends with \r for the next call
+        this.lastCharWasCR = data.length > 0 && data[data.length - 1] === '\r';
         return result;
     }
 

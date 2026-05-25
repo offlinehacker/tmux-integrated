@@ -62,6 +62,7 @@ const attachedWindowIds = new Set<string>();
 const terminalPtyByTerminal = new Map<vscode.Terminal, TmuxTerminal>();
 const pendingTerminalPtys: TmuxTerminal[] = [];
 let activeTmuxWindowId: string | null = null;
+let pendingUserTerminalFocus: boolean = false;
 
 // ---------------------------------------------------------------------------
 // Activation / deactivation
@@ -175,6 +176,11 @@ function registerTerminalRenameSync(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.window.onDidOpenTerminal((terminal) => {
             trackTerminal(terminal);
+            // VS Code may not focus terminal when it is opened
+            if(pendingUserTerminalFocus && looksLikeTmuxTerminal(terminal)) {
+                terminal.show();
+                pendingUserTerminalFocus = false;
+            }
         }),
         vscode.window.onDidCloseTerminal(untrackTerminal),
         vscode.window.onDidChangeActiveTerminal((terminal) => {
@@ -216,6 +222,7 @@ function registerTerminalProfile(context: vscode.ExtensionContext): void {
             async provideTerminalProfile(): Promise<vscode.TerminalProfile> {
                 try {
                     log('provideTerminalProfile called');
+                    pendingUserTerminalFocus = true;
                     const connected = await ensureClientConnected();
                     if (!connected) {
                         throw new Error('tmux-integrated: Could not connect to tmux. See Output > tmux-integrated for details.');
@@ -240,6 +247,7 @@ function registerTerminalProfile(context: vscode.ExtensionContext): void {
                 log('provideTerminalProfile: creating new terminal (no bootstrap/adopt)');
                 return buildTerminalProfile();
                 } catch (err) {
+                    pendingUserTerminalFocus = false;
                     log(`provideTerminalProfile error: ${err}`);
                     throw err;
                 }
@@ -390,7 +398,8 @@ async function ensureClientConnectedImpl(): Promise<boolean> {
                     paneId: windows[0].paneId,
                     windowIndex: windows[0].index,
                     name: windows[0].name,
-                    automaticRename: windows[0].automaticRename,
+                    // In a new session always set the name
+                    automaticRename: true,
                 };
             }
         } catch (err) {
