@@ -102,19 +102,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
     });
 
-    // Log any terminals that already exist when we activate. Under eager
-    // activation (activationEvents=["*"]) this should normally be zero —
-    // the workbench restores the terminal panel slightly later and our
-    // profile provider is now registered first. A non-zero count here
-    // indicates the workbench has already populated a default-profile
-    // terminal before we could register, which is the editor-side race
-    // tracked by microsoft/vscode#123188 / #263504 — see README.
-    const preExisting = vscode.window.terminals
-        .filter((t) => !looksLikeTmuxTerminal(t))
-        .map((t) => t.name);
-    if (preExisting.length > 0) {
-        log(`Non-tmux terminals already present at activation: [${preExisting.join(', ')}]. ` +
-            `If this is a stray default-shell tab, see the README "Stray default-shell tab on launch" section.`);
+    // The workbench can spawn an OS-default shell terminal (`/bin/zsh -il`
+    // on macOS, etc.) before any extension is activated, even when
+    // `terminal.integrated.defaultProfile.<os>` resolves to a
+    // contributed profile like `tmux-integrated`. The window between
+    // workbench-launch and our `registerTerminalProfileProvider` call
+    // is wider on Cursor than on stock VS Code but exists on both —
+    // see upstream microsoft/vscode#123188 / #263504. There is no
+    // activation event that fires *before* the workbench starts
+    // populating the terminal panel, so the only remedy from inside
+    // an extension is to detect and dispose the stray.
+    //
+    // Gated on:
+    //   - `tmux-integrated.closeStrayShellsOnActivation` (default true)
+    //   - `terminal.integrated.defaultProfile.<os>` === `tmux-integrated`
+    //     (so users who deliberately mix profiles are never affected)
+    //
+    // Any tab that does not look like one of ours (`tmux` or `tmux:N`)
+    // is treated as a stray when both gates are satisfied. Restored
+    // tmux-backed tabs go through `provideTerminalProfile` and acquire
+    // a TmuxTerminal pty, so they are never disposed here.
+    const stray = vscode.window.terminals.filter((t) => !looksLikeTmuxTerminal(t));
+    if (stray.length > 0) {
+        const cfgRoot = vscode.workspace.getConfiguration('tmux-integrated');
+        const closeStray = cfgRoot.get<boolean>('closeStrayShellsOnActivation', true);
+        const names = stray.map((t) => t.name).join(', ');
+        if (closeStray && isTmuxIntegratedDefaultProfile()) {
+            log(`Disposing ${stray.length} stray non-tmux terminal(s) at activation: [${names}] ` +
+                `(defaultProfile.<os>=tmux-integrated, closeStrayShellsOnActivation=true). ` +
+                `See README "Stray default-shell tab on launch" for context.`);
+            for (const t of stray) {
+                try { t.dispose(); } catch (err) { log(`stray dispose warning: ${err}`); }
+            }
+        } else {
+            log(`Non-tmux terminals already present at activation: [${names}]. ` +
+                `Auto-close skipped (closeStrayShellsOnActivation=${closeStray}, ` +
+                `defaultProfile.<os>=${currentPlatformDefaultProfile() ?? '<unset>'}). ` +
+                `See README "Stray default-shell tab on launch" for context.`);
+        }
     }
 
     // --- Auto-connect to existing tmux session on workspace open ----------
@@ -666,6 +691,25 @@ function resolveTmuxBinaryPath(): string {
 
 function log(message: string): void {
     outputChannel?.appendLine(`[${new Date().toISOString()}] ${message}`);
+}
+
+/**
+ * Read `terminal.integrated.defaultProfile.<os>` for the current platform.
+ * Returns `null` if unset. Used to gate the stray-shell auto-close so we
+ * never dispose user-opened terminals when the default profile isn't ours.
+ */
+function currentPlatformDefaultProfile(): string | null {
+    const key = process.platform === 'darwin' ? 'osx'
+        : process.platform === 'win32' ? 'windows'
+        : 'linux';
+    const v = vscode.workspace
+        .getConfiguration('terminal.integrated')
+        .get<string>(`defaultProfile.${key}`);
+    return v && v.length > 0 ? v : null;
+}
+
+function isTmuxIntegratedDefaultProfile(): boolean {
+    return currentPlatformDefaultProfile() === 'tmux-integrated';
 }
 
 /**

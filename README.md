@@ -92,27 +92,40 @@ then reload the VS Code window.
 
 ### Stray default-shell tab on launch
 
-On some editors — most notably **Cursor** — you may see an extra terminal tab
-labelled `zsh` (or `bash` / `pwsh`) appear alongside your tmux tabs every time
-you open the workspace. The tab runs the OS default shell with `-il`, not
-tmux. Closing it and re-opening Cursor brings it right back as a brand-new
-shell process.
-
-This is an editor-side race between extension activation and terminal-panel
-restoration. The workbench tries to populate the restored terminal panel
-*before* the `tmux-integrated` terminal-profile provider has been registered,
-so it can't resolve `terminal.integrated.defaultProfile.osx = tmux-integrated`
-and falls back to the OS default shell instead. See upstream
+VS Code's workbench can spawn an OS-default shell terminal (`/bin/zsh -il`,
+`bash`, `pwsh`, …) on startup *before* any extension has a chance to
+register a terminal-profile provider, even when
+`terminal.integrated.defaultProfile.<os>` resolves to a contributed profile
+like `tmux-integrated`. The race is editor-side — see upstream
 [microsoft/vscode#123188](https://github.com/microsoft/vscode/issues/123188)
-and [#263504](https://github.com/microsoft/vscode/issues/263504) for context.
+and [#263504](https://github.com/microsoft/vscode/issues/263504). It is
+wider in Cursor than in stock VS Code, but exists on both.
 
-The extension activates eagerly (`activationEvents: ["*"]`) to register its
-profile provider as early as possible, which is enough on vanilla VS Code.
-Cursor has a wider race window and may still beat the extension to it on
-cold launch. If you hit this:
+There is no activation event that fires before the workbench starts
+populating the terminal panel, so the only remedy from inside an extension
+is to detect the stray and dispose it. The extension does that
+automatically at activation when **both** of the following are true:
 
-1. Close the stray `zsh` tab once (X on the tab).
-2. Optionally also set:
+- `tmux-integrated.closeStrayShellsOnActivation` is `true` (the default).
+- `terminal.integrated.defaultProfile.<os>` for your platform is exactly
+  `"tmux-integrated"`.
+
+When these gates are not satisfied (e.g. you deliberately mix profiles)
+the extension only logs the stray to the `tmux-integrated` Output channel
+and leaves it untouched.
+
+If you ever want to keep the stray (for example because your workflow
+relies on having a non-tmux fallback terminal handy on launch), disable
+the auto-close:
+
+```jsonc
+{
+  "tmux-integrated.closeStrayShellsOnActivation": false
+}
+```
+
+Belt-and-braces option for users who don't need the workbench's own
+terminal session restoration on top of tmux's persistence:
 
 ```jsonc
 {
@@ -120,17 +133,11 @@ cold launch. If you hit this:
 }
 ```
 
-   tmux already provides terminal persistence for tmux-integrated tabs, so
-   the workbench's own session-restore feature is redundant when this
-   extension is your default profile.
+tmux already preserves your work across reloads, so VS Code's session
+restore is largely redundant when this extension is your default profile.
 
-Any new terminal you open after the editor has finished starting up *will*
-use the tmux-integrated profile — the race is strictly about the first tab
-that the workbench creates while restoring the panel.
-
-The extension's Output channel ("tmux-integrated") will log a line at
-activation time if it sees a non-tmux terminal already present, so you can
-confirm the race is what's happening.
+The extension's Output channel ("tmux-integrated") logs which terminals
+were disposed (or skipped, and why) at each activation.
 
 ## Extension settings
 
