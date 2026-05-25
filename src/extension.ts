@@ -686,12 +686,27 @@ function resolveTmuxBinaryPathSafe(): string | null {
  *
  * VS Code may also restore previously-open `tmux-integrated` profile tabs
  * by calling provideTerminalProfile during/after activation. To avoid
- * double-creating tabs (which on a high-latency reconnect would otherwise
- * spawn fresh tmux windows alongside the adopted ones), we yield to those
- * restore calls for a short grace period before mopping up whatever
- * windows are still un-claimed.
+ * double-creating tabs (which would spawn fresh tmux windows alongside
+ * the adopted ones), we yield to those restore calls before mopping up
+ * whatever windows are still un-claimed.
+ *
+ * Two timing knobs:
+ *
+ * - `AUTO_CONNECT_INITIAL_GRACE_MS` is the worst-case wait we'll tolerate
+ *   if VS Code never starts restoring (e.g. fresh launch with no prior
+ *   tabs, or `terminal.integrated.enablePersistentSessions=false`). With
+ *   eager activation (`activationEvents: ["*"]`) workbench restore can
+ *   start well after autoConnect, especially on Reload Window — see
+ *   commit history for the regression that introduced this longer wait.
+ *
+ * - `AUTO_CONNECT_QUIET_GRACE_MS` is the wait between successive restore
+ *   events. Each tmux-named terminal opening resets the timer, so a
+ *   restore that drains windows one at a time keeps the wait alive until
+ *   it's done. Quiet expiry means "VS Code has stopped restoring",
+ *   adopt the rest.
  */
-const AUTO_CONNECT_GRACE_MS = 750;
+const AUTO_CONNECT_INITIAL_GRACE_MS = 3000;
+const AUTO_CONNECT_QUIET_GRACE_MS = 750;
 async function autoConnectExistingSession(): Promise<void> {
     log('Auto-connect: existing tmux session detected, connecting…');
     const connected = await ensureClientConnected();
@@ -705,20 +720,45 @@ async function autoConnectExistingSession(): Promise<void> {
         return;
     }
 
-    log(`Auto-connect: ${windowsToAdopt.length} window(s) to adopt — yielding ${AUTO_CONNECT_GRACE_MS}ms for VS Code restore`);
-    setTimeout(() => {
+    log(`Auto-connect: ${windowsToAdopt.length} window(s) to adopt — waiting up to ${AUTO_CONNECT_INITIAL_GRACE_MS}ms for VS Code restore`);
+
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposable: vscode.Disposable | null = null;
+
+    const finalize = (reason: string) => {
+        graceTimer = null;
+        disposable?.dispose();
+        disposable = null;
         const remaining = windowsToAdopt.splice(0);
         if (remaining.length === 0) {
-            log('Auto-connect: queue drained by VS Code restore — no extra tabs needed');
+            log(`Auto-connect: ${reason} — queue drained by VS Code restore, no extra tabs needed`);
             return;
         }
-        log(`Auto-connect: creating tabs for ${remaining.length} unclaimed window(s)`);
+        log(`Auto-connect: ${reason} — creating tabs for ${remaining.length} unclaimed window(s)`);
         for (const w of remaining) {
             if (!attachedWindowIds.has(w.windowId)) {
                 vscode.window.createTerminal(buildTerminalOptions(w));
             }
         }
-    }, AUTO_CONNECT_GRACE_MS);
+    };
+
+    const armTimer = (ms: number, reason: string) => {
+        if (graceTimer) { clearTimeout(graceTimer); }
+        graceTimer = setTimeout(() => finalize(reason), ms);
+    };
+
+    // Each restore-triggered tmux terminal open resets the timer to the
+    // shorter quiet grace, so a slow drip-feed of restores keeps the
+    // wait alive until the workbench is done. We only reset while there
+    // is still something to adopt — otherwise the listener does nothing
+    // and we exit on the initial grace.
+    disposable = vscode.window.onDidOpenTerminal((terminal) => {
+        if (windowsToAdopt.length > 0 && looksLikeTmuxTerminal(terminal)) {
+            armTimer(AUTO_CONNECT_QUIET_GRACE_MS, 'quiet grace expired after VS Code restore');
+        }
+    });
+
+    armTimer(AUTO_CONNECT_INITIAL_GRACE_MS, 'initial grace expired with no VS Code restore');
 }
 
 function tmuxSessionExists(binaryPath: string, sessionName: string): boolean {
