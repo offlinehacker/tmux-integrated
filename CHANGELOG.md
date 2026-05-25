@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.15] - 2026-05-25
+
+### Changed
+
+- Add AGENTS.md with build, release and commit conventions guide
+- Update dependencies
+- Fix cursor position report issue seen e.g. with gh auth
+- Focus new windows and ensure naming of initial window in a session
+- Performance improvement - avoid iterating over chunks to do \n -> \r\n replacement use regex
+
 ## [0.1.14] - 2026-05-20
 
 ### Changed
