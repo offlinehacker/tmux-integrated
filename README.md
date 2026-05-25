@@ -90,6 +90,48 @@ an unexpected session name), VS Code is probably picking a shell profile named
 Make sure the profile name is exactly `"tmux-integrated"` in your settings,
 then reload the VS Code window.
 
+### Stray default-shell tab on launch
+
+On some editors — most notably **Cursor** — you may see an extra terminal tab
+labelled `zsh` (or `bash` / `pwsh`) appear alongside your tmux tabs every time
+you open the workspace. The tab runs the OS default shell with `-il`, not
+tmux. Closing it and re-opening Cursor brings it right back as a brand-new
+shell process.
+
+This is an editor-side race between extension activation and terminal-panel
+restoration. The workbench tries to populate the restored terminal panel
+*before* the `tmux-integrated` terminal-profile provider has been registered,
+so it can't resolve `terminal.integrated.defaultProfile.osx = tmux-integrated`
+and falls back to the OS default shell instead. See upstream
+[microsoft/vscode#123188](https://github.com/microsoft/vscode/issues/123188)
+and [#263504](https://github.com/microsoft/vscode/issues/263504) for context.
+
+The extension activates eagerly (`activationEvents: ["*"]`) to register its
+profile provider as early as possible, which is enough on vanilla VS Code.
+Cursor has a wider race window and may still beat the extension to it on
+cold launch. If you hit this:
+
+1. Close the stray `zsh` tab once (X on the tab).
+2. Optionally also set:
+
+```jsonc
+{
+  "terminal.integrated.enablePersistentSessions": false
+}
+```
+
+   tmux already provides terminal persistence for tmux-integrated tabs, so
+   the workbench's own session-restore feature is redundant when this
+   extension is your default profile.
+
+Any new terminal you open after the editor has finished starting up *will*
+use the tmux-integrated profile — the race is strictly about the first tab
+that the workbench creates while restoring the panel.
+
+The extension's Output channel ("tmux-integrated") will log a line at
+activation time if it sees a non-tmux terminal already present, so you can
+confirm the race is what's happening.
+
 ## Extension settings
 
 | Setting | Default | Description |

@@ -102,14 +102,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
     });
 
+    // Log any terminals that already exist when we activate. Under eager
+    // activation (activationEvents=["*"]) this should normally be zero —
+    // the workbench restores the terminal panel slightly later and our
+    // profile provider is now registered first. A non-zero count here
+    // indicates the workbench has already populated a default-profile
+    // terminal before we could register, which is the editor-side race
+    // tracked by microsoft/vscode#123188 / #263504 — see README.
+    const preExisting = vscode.window.terminals
+        .filter((t) => !looksLikeTmuxTerminal(t))
+        .map((t) => t.name);
+    if (preExisting.length > 0) {
+        log(`Non-tmux terminals already present at activation: [${preExisting.join(', ')}]. ` +
+            `If this is a stray default-shell tab, see the README "Stray default-shell tab on launch" section.`);
+    }
+
     // --- Auto-connect to existing tmux session on workspace open ----------
+    //
+    // Defer the synchronous tmux probe (execFileSync of `tmux -V` and
+    // `has-session`) so that eager activation doesn't briefly block the
+    // workbench during startup. Whether this runs before or after panel
+    // restore doesn't matter for correctness — autoConnectExistingSession
+    // already yields a grace period to provideTerminalProfile (see
+    // AUTO_CONNECT_GRACE_MS) and adoptNextWindow is race-safe.
     const cfg = vscode.workspace.getConfiguration('tmux-integrated');
     if (cfg.get<boolean>('autoConnect', true)) {
-        const sessionName = resolveSessionName();
-        const tmuxPath = resolveTmuxBinaryPathSafe();
-        if (tmuxPath && tmuxSessionExists(tmuxPath, sessionName)) {
-            autoConnectExistingSession();
-        }
+        setImmediate(() => {
+            const sessionName = resolveSessionName();
+            const tmuxPath = resolveTmuxBinaryPathSafe();
+            if (tmuxPath && tmuxSessionExists(tmuxPath, sessionName)) {
+                autoConnectExistingSession();
+            }
+        });
     }
 }
 

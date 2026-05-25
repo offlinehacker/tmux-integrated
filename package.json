@@ -23,7 +23,7 @@
     "session"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "*"
   ],
   "extensionKind": [
     "workspace"
