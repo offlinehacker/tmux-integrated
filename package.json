@@ -86,6 +86,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically connect to existing tmux sessions associated with the workspace when VS Code opens."
+        },
+        "tmux-integrated.closeStrayShellsOnActivation": {
+          "type": "boolean",
+          "default": true,
+          "description": "When terminal.integrated.defaultProfile.<os> is set to 'tmux-integrated', automatically dispose any non-tmux shell terminal that the workbench spawned before this extension could register its profile provider. The race is editor-side (see README troubleshooting); the cleanup is purely cosmetic and preserves any tmux-backed tabs."
         }
       }
     }

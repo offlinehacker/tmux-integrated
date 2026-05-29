@@ -102,14 +102,63 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
     });
 
+    // The workbench can spawn an OS-default shell terminal (`/bin/zsh -il`
+    // on macOS, etc.) before any extension is activated, even when
+    // `terminal.integrated.defaultProfile.<os>` resolves to a
+    // contributed profile like `tmux-integrated`. The window between
+    // workbench-launch and our `registerTerminalProfileProvider` call
+    // is wider on Cursor than on stock VS Code but exists on both —
+    // see upstream microsoft/vscode#123188 / #263504. There is no
+    // activation event that fires *before* the workbench starts
+    // populating the terminal panel, so the only remedy from inside
+    // an extension is to detect and dispose the stray.
+    //
+    // Gated on:
+    //   - `tmux-integrated.closeStrayShellsOnActivation` (default true)
+    //   - `terminal.integrated.defaultProfile.<os>` === `tmux-integrated`
+    //     (so users who deliberately mix profiles are never affected)
+    //
+    // Any tab that does not look like one of ours (`tmux` or `tmux:N`)
+    // is treated as a stray when both gates are satisfied. Restored
+    // tmux-backed tabs go through `provideTerminalProfile` and acquire
+    // a TmuxTerminal pty, so they are never disposed here.
+    const stray = vscode.window.terminals.filter((t) => !looksLikeTmuxTerminal(t));
+    if (stray.length > 0) {
+        const cfgRoot = vscode.workspace.getConfiguration('tmux-integrated');
+        const closeStray = cfgRoot.get<boolean>('closeStrayShellsOnActivation', true);
+        const names = stray.map((t) => t.name).join(', ');
+        if (closeStray && isTmuxIntegratedDefaultProfile()) {
+            log(`Disposing ${stray.length} stray non-tmux terminal(s) at activation: [${names}] ` +
+                `(defaultProfile.<os>=tmux-integrated, closeStrayShellsOnActivation=true). ` +
+                `See README "Stray default-shell tab on launch" for context.`);
+            for (const t of stray) {
+                try { t.dispose(); } catch (err) { log(`stray dispose warning: ${err}`); }
+            }
+        } else {
+            log(`Non-tmux terminals already present at activation: [${names}]. ` +
+                `Auto-close skipped (closeStrayShellsOnActivation=${closeStray}, ` +
+                `defaultProfile.<os>=${currentPlatformDefaultProfile() ?? '<unset>'}). ` +
+                `See README "Stray default-shell tab on launch" for context.`);
+        }
+    }
+
     // --- Auto-connect to existing tmux session on workspace open ----------
+    //
+    // Defer the synchronous tmux probe (execFileSync of `tmux -V` and
+    // `has-session`) so that eager activation doesn't briefly block the
+    // workbench during startup. Whether this runs before or after panel
+    // restore doesn't matter for correctness — autoConnectExistingSession
+    // already yields a grace period to provideTerminalProfile (see
+    // AUTO_CONNECT_GRACE_MS) and adoptNextWindow is race-safe.
     const cfg = vscode.workspace.getConfiguration('tmux-integrated');
     if (cfg.get<boolean>('autoConnect', true)) {
-        const sessionName = resolveSessionName();
-        const tmuxPath = resolveTmuxBinaryPathSafe();
-        if (tmuxPath && tmuxSessionExists(tmuxPath, sessionName)) {
-            autoConnectExistingSession();
-        }
+        setImmediate(() => {
+            const sessionName = resolveSessionName();
+            const tmuxPath = resolveTmuxBinaryPathSafe();
+            if (tmuxPath && tmuxSessionExists(tmuxPath, sessionName)) {
+                autoConnectExistingSession();
+            }
+        });
     }
 }
 
@@ -645,6 +694,25 @@ function log(message: string): void {
 }
 
 /**
+ * Read `terminal.integrated.defaultProfile.<os>` for the current platform.
+ * Returns `null` if unset. Used to gate the stray-shell auto-close so we
+ * never dispose user-opened terminals when the default profile isn't ours.
+ */
+function currentPlatformDefaultProfile(): string | null {
+    const key = process.platform === 'darwin' ? 'osx'
+        : process.platform === 'win32' ? 'windows'
+        : 'linux';
+    const v = vscode.workspace
+        .getConfiguration('terminal.integrated')
+        .get<string>(`defaultProfile.${key}`);
+    return v && v.length > 0 ? v : null;
+}
+
+function isTmuxIntegratedDefaultProfile(): boolean {
+    return currentPlatformDefaultProfile() === 'tmux-integrated';
+}
+
+/**
  * Like resolveTmuxBinaryPath but returns null instead of throwing
  * when tmux is not found.
  */
@@ -662,12 +730,27 @@ function resolveTmuxBinaryPathSafe(): string | null {
  *
  * VS Code may also restore previously-open `tmux-integrated` profile tabs
  * by calling provideTerminalProfile during/after activation. To avoid
- * double-creating tabs (which on a high-latency reconnect would otherwise
- * spawn fresh tmux windows alongside the adopted ones), we yield to those
- * restore calls for a short grace period before mopping up whatever
- * windows are still un-claimed.
+ * double-creating tabs (which would spawn fresh tmux windows alongside
+ * the adopted ones), we yield to those restore calls before mopping up
+ * whatever windows are still un-claimed.
+ *
+ * Two timing knobs:
+ *
+ * - `AUTO_CONNECT_INITIAL_GRACE_MS` is the worst-case wait we'll tolerate
+ *   if VS Code never starts restoring (e.g. fresh launch with no prior
+ *   tabs, or `terminal.integrated.enablePersistentSessions=false`). With
+ *   eager activation (`activationEvents: ["*"]`) workbench restore can
+ *   start well after autoConnect, especially on Reload Window — see
+ *   commit history for the regression that introduced this longer wait.
+ *
+ * - `AUTO_CONNECT_QUIET_GRACE_MS` is the wait between successive restore
+ *   events. Each tmux-named terminal opening resets the timer, so a
+ *   restore that drains windows one at a time keeps the wait alive until
+ *   it's done. Quiet expiry means "VS Code has stopped restoring",
+ *   adopt the rest.
  */
-const AUTO_CONNECT_GRACE_MS = 750;
+const AUTO_CONNECT_INITIAL_GRACE_MS = 3000;
+const AUTO_CONNECT_QUIET_GRACE_MS = 750;
 async function autoConnectExistingSession(): Promise<void> {
     log('Auto-connect: existing tmux session detected, connecting…');
     const connected = await ensureClientConnected();
@@ -681,20 +764,45 @@ async function autoConnectExistingSession(): Promise<void> {
         return;
     }
 
-    log(`Auto-connect: ${windowsToAdopt.length} window(s) to adopt — yielding ${AUTO_CONNECT_GRACE_MS}ms for VS Code restore`);
-    setTimeout(() => {
+    log(`Auto-connect: ${windowsToAdopt.length} window(s) to adopt — waiting up to ${AUTO_CONNECT_INITIAL_GRACE_MS}ms for VS Code restore`);
+
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposable: vscode.Disposable | null = null;
+
+    const finalize = (reason: string) => {
+        graceTimer = null;
+        disposable?.dispose();
+        disposable = null;
         const remaining = windowsToAdopt.splice(0);
         if (remaining.length === 0) {
-            log('Auto-connect: queue drained by VS Code restore — no extra tabs needed');
+            log(`Auto-connect: ${reason} — queue drained by VS Code restore, no extra tabs needed`);
             return;
         }
-        log(`Auto-connect: creating tabs for ${remaining.length} unclaimed window(s)`);
+        log(`Auto-connect: ${reason} — creating tabs for ${remaining.length} unclaimed window(s)`);
         for (const w of remaining) {
             if (!attachedWindowIds.has(w.windowId)) {
                 vscode.window.createTerminal(buildTerminalOptions(w));
             }
         }
-    }, AUTO_CONNECT_GRACE_MS);
+    };
+
+    const armTimer = (ms: number, reason: string) => {
+        if (graceTimer) { clearTimeout(graceTimer); }
+        graceTimer = setTimeout(() => finalize(reason), ms);
+    };
+
+    // Each restore-triggered tmux terminal open resets the timer to the
+    // shorter quiet grace, so a slow drip-feed of restores keeps the
+    // wait alive until the workbench is done. We only reset while there
+    // is still something to adopt — otherwise the listener does nothing
+    // and we exit on the initial grace.
+    disposable = vscode.window.onDidOpenTerminal((terminal) => {
+        if (windowsToAdopt.length > 0 && looksLikeTmuxTerminal(terminal)) {
+            armTimer(AUTO_CONNECT_QUIET_GRACE_MS, 'quiet grace expired after VS Code restore');
+        }
+    });
+
+    armTimer(AUTO_CONNECT_INITIAL_GRACE_MS, 'initial grace expired with no VS Code restore');
 }
 
 function tmuxSessionExists(binaryPath: string, sessionName: string): boolean {

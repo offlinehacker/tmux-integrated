@@ -90,6 +90,55 @@ an unexpected session name), VS Code is probably picking a shell profile named
 Make sure the profile name is exactly `"tmux-integrated"` in your settings,
 then reload the VS Code window.
 
+### Stray default-shell tab on launch
+
+VS Code's workbench can spawn an OS-default shell terminal (`/bin/zsh -il`,
+`bash`, `pwsh`, …) on startup *before* any extension has a chance to
+register a terminal-profile provider, even when
+`terminal.integrated.defaultProfile.<os>` resolves to a contributed profile
+like `tmux-integrated`. The race is editor-side — see upstream
+[microsoft/vscode#123188](https://github.com/microsoft/vscode/issues/123188)
+and [#263504](https://github.com/microsoft/vscode/issues/263504). It is
+wider in Cursor than in stock VS Code, but exists on both.
+
+There is no activation event that fires before the workbench starts
+populating the terminal panel, so the only remedy from inside an extension
+is to detect the stray and dispose it. The extension does that
+automatically at activation when **both** of the following are true:
+
+- `tmux-integrated.closeStrayShellsOnActivation` is `true` (the default).
+- `terminal.integrated.defaultProfile.<os>` for your platform is exactly
+  `"tmux-integrated"`.
+
+When these gates are not satisfied (e.g. you deliberately mix profiles)
+the extension only logs the stray to the `tmux-integrated` Output channel
+and leaves it untouched.
+
+If you ever want to keep the stray (for example because your workflow
+relies on having a non-tmux fallback terminal handy on launch), disable
+the auto-close:
+
+```jsonc
+{
+  "tmux-integrated.closeStrayShellsOnActivation": false
+}
+```
+
+Belt-and-braces option for users who don't need the workbench's own
+terminal session restoration on top of tmux's persistence:
+
+```jsonc
+{
+  "terminal.integrated.enablePersistentSessions": false
+}
+```
+
+tmux already preserves your work across reloads, so VS Code's session
+restore is largely redundant when this extension is your default profile.
+
+The extension's Output channel ("tmux-integrated") logs which terminals
+were disposed (or skipped, and why) at each activation.
+
 ## Extension settings
 
 | Setting | Default | Description |
