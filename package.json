@@ -91,6 +91,17 @@
           "type": "boolean",
           "default": true,
           "description": "When terminal.integrated.defaultProfile.<os> is set to 'tmux-integrated', automatically dispose any non-tmux shell terminal that the workbench spawned before this extension could register its profile provider. The race is editor-side (see README troubleshooting); the cleanup is purely cosmetic and preserves any tmux-backed tabs."
+        },
+        "tmux-integrated.terminalLocation": {
+          "type": "string",
+          "enum": ["panel", "editor"],
+          "default": "panel",
+          "description": "Where to open tmux terminal tabs. 'editor' opens them as editor tabs, 'panel' opens them in the terminal panel."
+        },
+        "tmux-integrated.pinTerminals": {
+          "type": "boolean",
+          "default": true,
+          "description": "When terminalLocation is 'editor', pin terminal tabs so they are not replaced by new file tabs. Uses VS Code's built-in pinEditor command."
         }
       }
     }

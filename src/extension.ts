@@ -314,6 +314,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
                 buildTerminalOptions(),
             );
             terminal.show();
+            await maybePinTerminal(terminal);
         }),
 
         vscode.commands.registerCommand('tmux-integrated.attachWindow', async () => {
@@ -522,10 +523,35 @@ function buildTerminalOptions(
     );
     registerPendingTerminalPty(pty);
 
-    return {
+    const options: vscode.ExtensionTerminalOptions = {
         name: existingWindow?.windowIndex !== undefined ? `tmux:${existingWindow.windowIndex}` : 'tmux',
         pty,
     };
+
+    // Read the terminalLocation setting and set location accordingly.
+    // When 'editor', VS Code's TerminalEditorService.openEditor() hardcodes pinned: true.
+    const location = cfg.get<string>('terminalLocation', 'panel');
+    if (location === 'editor') {
+        options.location = vscode.TerminalLocation.Editor;
+    }
+
+    return options;
+}
+
+/**
+ * Pin a terminal's editor tab if terminalLocation is 'editor' and pinTerminals is enabled.
+ * VS Code's TerminalEditorService already sets pinned:true on openEditor, but this is a
+ * safety net for cases where the pin doesn't take effect (e.g. timing races on reconnect).
+ */
+async function maybePinTerminal(terminal: vscode.Terminal): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('tmux-integrated');
+    const location = cfg.get<string>('terminalLocation', 'panel');
+    const pin = cfg.get<boolean>('pinTerminals', true);
+    if (location === 'editor' && pin) {
+        // Focus the terminal so pinEditor targets the right editor tab
+        terminal.show();
+        await vscode.commands.executeCommand('workbench.action.pinEditor');
+    }
 }
 
 function buildTerminalProfile(
@@ -609,6 +635,7 @@ async function showAttachWindowPicker(sessionName: string): Promise<void> {
             automaticRename: picked.automaticRename,
         }));
         terminal.show();
+        await maybePinTerminal(terminal);
     }
 }
 
@@ -769,7 +796,7 @@ async function autoConnectExistingSession(): Promise<void> {
     let graceTimer: ReturnType<typeof setTimeout> | null = null;
     let disposable: vscode.Disposable | null = null;
 
-    const finalize = (reason: string) => {
+    const finalize = async (reason: string) => {
         graceTimer = null;
         disposable?.dispose();
         disposable = null;
@@ -781,7 +808,9 @@ async function autoConnectExistingSession(): Promise<void> {
         log(`Auto-connect: ${reason} — creating tabs for ${remaining.length} unclaimed window(s)`);
         for (const w of remaining) {
             if (!attachedWindowIds.has(w.windowId)) {
-                vscode.window.createTerminal(buildTerminalOptions(w));
+                const terminal = vscode.window.createTerminal(buildTerminalOptions(w));
+                terminal.show();
+                await maybePinTerminal(terminal);
             }
         }
     };
