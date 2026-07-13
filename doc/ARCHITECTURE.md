@@ -53,7 +53,8 @@ a persistent backing store via tmux **control mode** (`tmux -CC`).
   API has no split-pane abstraction.
 * **Window creation is synchronized.** A tmux `%window-add` notification creates
   a matching VS Code terminal unless that window is already attached or queued
-  for adoption.
+  for adoption. This can be disabled with
+  `tmux-integrated.syncWindowCreation`.
 
 ## Source layout
 
@@ -61,7 +62,7 @@ a persistent backing store via tmux **control mode** (`tmux -CC`).
 |---|---|
 | `src/extension.ts` | Activation, lifecycle, terminal-profile + command registration, autoConnect, status bar, env-var forwarding. |
 | `src/tmuxTerminalProvider.ts` | The `vscode.Pseudoterminal` (`TmuxTerminal`). Forwards user input to a tmux pane, renders pane output back into xterm.js, and owns the tab name. |
-| `src/windowTitle.ts` | Pure helpers that decide the VS Code tab title from tmux's `#{window_name}` and `#{automatic-rename}`. |
+| `src/windowTitle.ts` | Pure helper that chooses the VS Code tab title from tmux's `#{window_name}`. |
 | `src/tmuxControlClient.ts` | High-level typed tmux operations (`newWindow`, `listWindows`, `resizeWindowForClient`, …), node-pty lifecycle, version gating. Wraps `TmuxGateway`. |
 | `src/tmuxGateway.ts` | Low-level control-mode protocol parser. Frames lines, handles `%begin/%end/%error`, manages the pending-command queue, defers writes until `%session-changed`, decodes `%output`/`%extended-output` payloads. |
 
@@ -146,7 +147,6 @@ open(initialDimensions)
   |     * else: client.newWindow(...)  (creation path)
   |-- record windowId, paneId, tabWindowIndex
   |-- subscribe: 'output' / 'window-close' / 'window-renamed' / 'tmux-exit'
-  |-- set automatic-rename from tmux-integrated.automaticRename (default off)
   |-- query #{window_name} and emit it unchanged
   |-- emit initial tab name
   |-- resizeWindowForClient(initialDimensions)
@@ -170,32 +170,32 @@ explicitly preserved so they can be re-adopted next launch.
 
 ## Tab title model (`windowTitle.ts`)
 
-A tmux window has both a `#{window_name}` and an `#{automatic-rename}` flag.
-The window name is authoritative and is shown verbatim in VS Code:
+A tmux window's `#{window_name}` is authoritative and is shown verbatim in VS Code:
 
 ```text
 name non-empty → label = name
 name empty     → label = "tmux:<window_index>"
 ```
 
-`tmux-integrated.automaticRename` controls tmux's process-driven renaming and
-defaults to off. Changing this option never replaces the current window name.
-OSC 0/2 title changes are read back from tmux's `#{pane_title}`, promoted to the
-tmux window name, and then reflected in VS Code through the normal
-`%window-renamed` notification.
+The extension does not change tmux's `automatic-rename` option. OSC 0/2 title
+changes are read back from tmux's `#{pane_title}`, promoted to the tmux window
+name, and then reflected in VS Code through the normal `%window-renamed`
+notification.
 
 The bidirectional rename sync works as follows:
 
-* **VS Code → tmux**: a built-in "Rename…" mutates `terminal.name`. The
-  `setOnInputCallback` keystroke probe in `extension.ts` notices the
-  divergence and calls `pty.syncNameToTmux(newName)`.
+* **VS Code → tmux**: a built-in "Rename…" mutates `terminal.name`. VS Code
+  exposes no name-change event, so a 250 ms observer over tracked tmux
+  terminals notices the divergence and calls `pty.syncNameToTmux(newName)`.
 * **tmux → VS Code**: `%window-renamed` notifications are processed by
   `windowRenamedListener` and emitted to VS Code via `onDidChangeName`.
 * **Explicit command**: `tmux-integrated.renameTerminal` calls
   `pty.renameWindow(newName)` which atomically updates both sides.
 
 `emitNameIfChanged` deduplicates emissions so the bidirectional loop doesn't
-echo forever.
+echo forever. `tmux-integrated.syncWindowNames` can restrict synchronization to
+either direction or disable it. OSC 0/2 controls are removed from renderer
+output after tmux parses them so xterm.js cannot bypass that direction setting.
 
 ## Protocol layer (`tmuxGateway.ts`)
 
@@ -269,23 +269,15 @@ Three things compound:
 
 ### "Tabs get renamed to 'zsh' or 'bash' on reconnect"
 
-`TmuxTerminal.open()` registers `windowRenamedListener` early (correct —
-we mustn't drop events) and only later issues `set-option -w
-automatic-rename off`. tmux can emit `%window-renamed @id zsh` from its own
-automatic-rename feature in the gap between those two steps. The listener
-processed those events as if they were intentional renames, so the VS Code
-tab title became "zsh" / "bash" / whatever the foreground process happened
-to be. The race window is sub-millisecond locally but seconds-wide over a
-laggy SSH tunnel.
+`TmuxTerminal.open()` registers `windowRenamedListener` before querying the
+current name. tmux can emit `%window-renamed` while that query is in flight,
+especially over a laggy SSH tunnel.
 
 *Mitigations:*
 
-* An `initialNameCommitted` guard suppresses the listener until `open()`
-  has settled the title. After commit the listener works normally so
-  user-initiated `rename-window` from inside tmux still updates the tab.
-* `name` and `automaticRename` are now propagated all the way from
-  `listWindows()` into `existingWindow`, so on reconnect we don't need a
-  fresh round-trip just to find out what the window is called.
+* An `initialNameCommitted` guard suppresses the listener until `open()` has
+  completed its authoritative `#{window_name}` query. After commit the listener
+  works normally so subsequent tmux renames update the tab.
 
 ## Things that are intentionally absent
 

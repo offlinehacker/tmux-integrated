@@ -87,10 +87,16 @@
           "default": true,
           "description": "Automatically connect to existing tmux sessions associated with the workspace when VS Code opens."
         },
-        "tmux-integrated.automaticRename": {
+        "tmux-integrated.syncWindowNames": {
+          "type": "string",
+          "enum": ["bidirectional", "tmuxToVscode", "vscodeToTmux", "off"],
+          "default": "bidirectional",
+          "description": "Control synchronization between tmux window names and VS Code terminal tab names."
+        },
+        "tmux-integrated.syncWindowCreation": {
           "type": "boolean",
-          "default": false,
-          "description": "Allow tmux to automatically rename windows based on the foreground process. Disabled by default so the current tmux window name is preserved."
+          "default": true,
+          "description": "Automatically create a matching VS Code terminal when a window is created externally in the connected tmux session."
         },
         "tmux-integrated.closeStrayShellsOnActivation": {
           "type": "boolean",

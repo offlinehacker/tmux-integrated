@@ -5,12 +5,6 @@
  * while a new window has no available name.
  */
 
-/** Interpret `#{automatic-rename}` / `list-windows` field (version-dependent values). */
-export function tmuxAutomaticRenameIsOn(value: string | undefined): boolean {
-    const v = (value ?? '').trim().toLowerCase();
-    return v === '1' || v === 'on' || v === 'yes' || v === 'true';
-}
-
 /**
  * @param windowName current `#{window_name}`
  * @param windowIndex zero-based `#{window_index}`

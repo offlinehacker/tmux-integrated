@@ -14,6 +14,8 @@ import * as vscode from 'vscode';
 import { TmuxControlClient, TmuxPaneOutput, CommandFlags, shellescape } from './tmuxControlClient';
 import { pickTerminalTabTitle } from './windowTitle';
 
+export type WindowNameSyncDirection = 'bidirectional' | 'tmuxToVscode' | 'vscodeToTmux' | 'off';
+
 /** Map of raw terminal escape sequences to tmux key names. */
 const KEY_MAP: Record<string, string> = {
     '\r':       'Enter',
@@ -142,7 +144,7 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
 
     private paneId: string | null = null;
     private windowId: string | null = null;
-    /** tmux window_index for tab labels (`tmux:&lt;n&gt;` when automatic-rename is on). */
+    /** tmux window_index used as a fallback when no window name is available. */
     private tabWindowIndex: number | undefined = undefined;
     private windowClosedByTmux = false;
     private readonly existingWindow: {
@@ -150,7 +152,6 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         paneId: string;
         windowIndex?: number;
         name?: string;
-        automaticRename?: boolean;
     } | null;
     private readonly isDeactivating: () => boolean;
     private readonly lifecycleHooks: {
@@ -167,19 +168,12 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
     private lastTmuxDrivenName: string | null = null;
     private lastTmuxDrivenNameAt = 0;
     private lastCharWasCR = false;
+    private oscTitleBuffer = '';
     private resizeTimer: ReturnType<typeof setTimeout> | null = null;
     private readonly log: (message: string) => void;
     /**
-     * Set from `extension.ts` (`registerTerminalRenameSync`).  Invoked at the
-     * start of each `handleInput` so the extension can compare `terminal.name`
-     * to `getLastEmittedName()` and push a built-in "Rename…" to tmux via
-     * `syncNameToTmux`.  No VS Code API registers this; it is optional wiring.
-     */
-    private onInputCallback: (() => void) | null = null;
-    /**
      * Becomes true only after open() has settled the initial tab title
-     * (configured automatic-rename and read the current tmux window name).
-     * Until then,
+     * by reading the current tmux window name. Until then,
      * windowRenamedListener ignores incoming %window-renamed events so
      * that an in-flight rename cannot race the authoritative name query.
      * After commit, the listener works normally so subsequent tmux renames
@@ -192,13 +186,12 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         private readonly startDirectory: string | undefined,
         private readonly extraEnv: Record<string, string>,
         private readonly shell: string | undefined,
-        private readonly automaticRename: boolean,
+        private readonly getWindowNameSyncDirection: () => WindowNameSyncDirection,
         existingWindow?: {
             windowId: string;
             paneId: string;
             windowIndex?: number;
             name?: string;
-            automaticRename?: boolean;
         },
         lifecycleHooks?: {
             onWindowAttached?: (windowId: string) => void;
@@ -230,9 +223,6 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
             return;
         }
         await this.client
-            .sendCommand(`set-option -w -t ${this.windowId} automatic-rename off`, CommandFlags.TolerateErrors)
-            .catch(() => {});
-        await this.client
             .sendCommand(`rename-window -t ${this.windowId} ${shellescape(name)}`, CommandFlags.TolerateErrors)
             .catch(() => {});
         // Update VS Code tab — mark as tmux-driven so the window-renamed echo is suppressed.
@@ -255,9 +245,6 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         this.lastTmuxDrivenNameAt = Date.now();
 
         await this.client
-            .sendCommand(`set-option -w -t ${this.windowId} automatic-rename off`, CommandFlags.TolerateErrors)
-            .catch(() => {});
-        await this.client
             .sendCommand(`rename-window -t ${this.windowId} ${shellescape(name)}`, CommandFlags.TolerateErrors)
             .catch(() => {});
     }
@@ -267,14 +254,6 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         return this.lastEmittedName;
     }
 
-    /**
-     * See `onInputCallback` field.  Called once per tracked terminal when the
-     * extension attaches rename-sync logic.
-     */
-    setOnInputCallback(cb: () => void): void {
-        this.onInputCallback = cb;
-    }
-
     // -----------------------------------------------------------------------
     // Pseudoterminal interface
     // -----------------------------------------------------------------------
@@ -282,7 +261,7 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
     async open(initialDimensions: vscode.TerminalDimensions | undefined): Promise<void> {
         try {
             this.log(`open() called: existingWindow=${JSON.stringify(this.existingWindow)}, dims=${initialDimensions?.columns}x${initialDimensions?.rows}, shell=${this.shell}, clientConnected=${this.client.isConnected()}`);
-            let targetWindow: { windowId: string; paneId: string; windowIndex?: number; name?: string; automaticRename?: boolean };
+            let targetWindow: { windowId: string; paneId: string; windowIndex?: number; name?: string };
             if (this.existingWindow) {
                 targetWindow = this.existingWindow;
                 this.log(`open(): reusing existing window ${targetWindow.windowId}`);
@@ -323,8 +302,9 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
             // Forward pane output to the VS Code terminal renderer.
             this.outputListener = ({ paneId: id, data }: TmuxPaneOutput) => {
                 if (id === this.paneId) {
-                    this.writeEmitter.fire(this.normalizeTerminalOutput(data));
-                    if (/\x1b\](?:0|2);/u.test(data)) {
+                    const output = this.stripOscTitleSequences(data);
+                    this.writeEmitter.fire(this.normalizeTerminalOutput(output.data));
+                    if (output.titleChanged && this.syncsFromTmux()) {
                         void this.syncPaneTitleToWindow();
                     }
                 }
@@ -351,6 +331,9 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
                 if (!this.initialNameCommitted) {
                     return;
                 }
+                if (!this.syncsFromTmux()) {
+                    return;
+                }
                 this.emitNameIfChanged(
                     pickTerminalTabTitle(payload.name, this.tabWindowIndex),
                     'tmux',
@@ -368,15 +351,6 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
             this.client.on('tmux-exit', this.tmuxExitListener);
 
             try {
-                // Configure process-driven renaming without replacing the
-                // name tmux already has for this window.
-                await this.client
-                    .sendCommand(
-                        `set-option -w -t ${windowId} automatic-rename ${this.automaticRename ? 'on' : 'off'}`,
-                        CommandFlags.TolerateErrors,
-                    )
-                    .catch(() => {});
-
                 let candidate = (await this.client.getWindowName(windowId).catch(() => '')).trim();
                 if (!candidate) {
                     candidate = (this.existingWindow?.name ?? targetWindow.name ?? '').trim();
@@ -433,7 +407,6 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
      */
     handleInput(data: string): void {
         if (!this.paneId) { return; }
-        this.onInputCallback?.();
         // Defence-in-depth: drop any DSR / DA / CPR replies that xterm.js
         // still emits on its onData channel (e.g. for queries we didn't
         // catch in normalizeTerminalOutput). These can never come from a
@@ -681,6 +654,52 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         return label.trim();
     }
 
+    private syncsFromTmux(): boolean {
+        const direction = this.getWindowNameSyncDirection();
+        return direction === 'bidirectional' || direction === 'tmuxToVscode';
+    }
+
+    /** Remove OSC 0/2 controls so xterm.js cannot bypass sync direction. */
+    private stripOscTitleSequences(data: string): { data: string; titleChanged: boolean } {
+        const markers = ['\x1b]0;', '\x1b]2;'];
+        let input = this.oscTitleBuffer + data;
+        let output = '';
+        let titleChanged = false;
+        this.oscTitleBuffer = '';
+
+        while (input.length > 0) {
+            const starts = markers
+                .map((marker) => input.indexOf(marker))
+                .filter((index) => index >= 0);
+            if (starts.length === 0) {
+                let carryLength = 0;
+                for (let length = 1; length < markers[0].length && length <= input.length; length++) {
+                    const suffix = input.slice(-length);
+                    if (markers.some((marker) => marker.startsWith(suffix))) {
+                        carryLength = length;
+                    }
+                }
+                output += carryLength > 0 ? input.slice(0, -carryLength) : input;
+                this.oscTitleBuffer = carryLength > 0 ? input.slice(-carryLength) : '';
+                break;
+            }
+
+            const start = Math.min(...starts);
+            output += input.slice(0, start);
+            const bel = input.indexOf('\x07', start + 4);
+            const st = input.indexOf('\x1b\\', start + 4);
+            const ends = [bel >= 0 ? bel + 1 : -1, st >= 0 ? st + 2 : -1].filter((index) => index >= 0);
+            if (ends.length === 0) {
+                this.oscTitleBuffer = input.slice(start);
+                break;
+            }
+            input = input.slice(Math.min(...ends));
+            titleChanged = true;
+        }
+
+        return { data: output, titleChanged };
+    }
+
     private async syncPaneTitleToWindow(): Promise<void> {
         if (!this.paneId || !this.windowId || !this.client.isConnected()) {
             return;
@@ -742,6 +761,7 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         }
 
         this.lastCharWasCR = false;
+        this.oscTitleBuffer = '';
         this.tabWindowIndex = undefined;
         this.lastEmittedName = null;
         this.lastTmuxDrivenName = null;
