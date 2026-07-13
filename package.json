@@ -87,6 +87,11 @@
           "default": true,
           "description": "Automatically connect to existing tmux sessions associated with the workspace when VS Code opens."
         },
+        "tmux-integrated.automaticRename": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow tmux to automatically rename windows based on the foreground process. Disabled by default so the current tmux window name is preserved."
+        },
         "tmux-integrated.closeStrayShellsOnActivation": {
           "type": "boolean",
           "default": true,

@@ -367,6 +367,12 @@ export class TmuxControlClient extends EventEmitter {
         return (res[0] ?? '').trim();
     }
 
+    /** Title last set by the program in this pane, including via OSC 0/2. */
+    async getPaneTitle(paneId: string): Promise<string> {
+        const res = await this.sendCommand(`display-message -t ${paneId} -p "#{pane_title}"`);
+        return (res[0] ?? '').trim();
+    }
+
     async resizePane(paneId: string, cols: number, rows: number): Promise<void> {
         await this.sendCommand(`resize-pane -t ${paneId} -x ${cols} -y ${rows}`);
     }

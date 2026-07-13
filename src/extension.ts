@@ -59,6 +59,7 @@ let disposing = false;
  */
 let inFlightConnect: Promise<boolean> | null = null;
 const attachedWindowIds = new Set<string>();
+const pendingWindowAddIds = new Set<string>();
 const terminalPtyByTerminal = new Map<vscode.Terminal, TmuxTerminal>();
 const pendingTerminalPtys: TmuxTerminal[] = [];
 let activeTmuxWindowId: string | null = null;
@@ -95,6 +96,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             disposing = true;
             terminalPtyByTerminal.clear();
             pendingTerminalPtys.length = 0;
+            pendingWindowAddIds.clear();
             activeTmuxWindowId = null;
             inFlightConnect = null;
             client?.disconnect();
@@ -166,6 +168,7 @@ export function deactivate(): void {
     disposing = true;
     terminalPtyByTerminal.clear();
     pendingTerminalPtys.length = 0;
+    pendingWindowAddIds.clear();
     activeTmuxWindowId = null;
     inFlightConnect = null;
     client?.disconnect();
@@ -436,6 +439,18 @@ async function ensureClientConnectedImpl(): Promise<boolean> {
         return false;
     }
 
+    const connectedClient = client;
+    connectedClient.on('window-add', (windowId: string) => {
+        if (!windowId.startsWith('@') || pendingWindowAddIds.has(windowId)) {
+            return;
+        }
+        pendingWindowAddIds.add(windowId);
+        // A window created by TmuxTerminal.open() emits %window-add before its
+        // new-window response resolves. Reconcile on the next event-loop turn
+        // so that path can claim the ID before we treat it as external.
+        setImmediate(() => void adoptAddedTmuxWindow(connectedClient, windowId));
+    });
+
     bootstrapWindow = null;
     windowsToAdopt = [];
     if (!sessionAlreadyExists) {
@@ -448,8 +463,7 @@ async function ensureClientConnectedImpl(): Promise<boolean> {
                     paneId: windows[0].paneId,
                     windowIndex: windows[0].index,
                     name: windows[0].name,
-                    // In a new session always set the name
-                    automaticRename: true,
+                    automaticRename: windows[0].automaticRename,
                 };
             }
         } catch (err) {
@@ -503,12 +517,14 @@ function buildTerminalOptions(
 ): vscode.ExtensionTerminalOptions {
     const cfg = vscode.workspace.getConfiguration('tmux-integrated');
     const shell = (cfg.get<string>('shell') || process.env.SHELL || '/bin/bash') || undefined;
+    const automaticRename = cfg.get<boolean>('automaticRename', false);
 
     const pty = new TmuxTerminal(
         client!,
         defaultStartDirectory,
         collectVscodeEnvVars(),
         shell || undefined,
+        automaticRename,
         existingWindow,
         {
             onWindowAttached: (windowId) => {
@@ -524,7 +540,8 @@ function buildTerminalOptions(
     registerPendingTerminalPty(pty);
 
     const options: vscode.ExtensionTerminalOptions = {
-        name: existingWindow?.windowIndex !== undefined ? `tmux:${existingWindow.windowIndex}` : 'tmux',
+        name: existingWindow?.name?.trim()
+            || (existingWindow?.windowIndex !== undefined ? `tmux:${existingWindow.windowIndex}` : 'tmux'),
         pty,
     };
 
@@ -594,6 +611,44 @@ function adoptNextWindow(): AdoptableWindow | undefined {
         }
     }
     return undefined;
+}
+
+async function adoptAddedTmuxWindow(sourceClient: TmuxControlClient, windowId: string): Promise<void> {
+    try {
+        if (disposing || client !== sourceClient || attachedWindowIds.has(windowId)) {
+            return;
+        }
+        if (bootstrapWindow?.windowId === windowId || windowsToAdopt.some((w) => w.windowId === windowId)) {
+            return;
+        }
+
+        const windows = await sourceClient.listWindows();
+        if (disposing || client !== sourceClient || attachedWindowIds.has(windowId)) {
+            return;
+        }
+        if (bootstrapWindow?.windowId === windowId || windowsToAdopt.some((w) => w.windowId === windowId)) {
+            return;
+        }
+        const added = windows.find((w) => w.id === windowId);
+        if (!added) {
+            return;
+        }
+
+        log(`tmux created window ${windowId}; creating matching VS Code terminal`);
+        const terminal = vscode.window.createTerminal(buildTerminalOptions({
+            windowId: added.id,
+            paneId: added.paneId,
+            windowIndex: added.index,
+            name: added.name,
+            automaticRename: added.automaticRename,
+        }));
+        terminal.show(true);
+        await maybePinTerminal(terminal);
+    } catch (err) {
+        log(`window-add sync warning for ${windowId}: ${err}`);
+    } finally {
+        pendingWindowAddIds.delete(windowId);
+    }
 }
 
 // ---------------------------------------------------------------------------

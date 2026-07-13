@@ -224,6 +224,7 @@ Every release also attaches a `.vsix` to its
 | `tmux-integrated.shell` | `$SHELL` or `/bin/bash` | Shell to run inside each tmux pane |
 | `tmux-integrated.cwd` | *(workspace folder)* | Starting directory for new tmux terminals. Supports `${workspaceFolder}`. If unset, falls back to `terminal.integrated.cwd`, then the workspace folder. |
 | `tmux-integrated.autoConnect` | `true` | Automatically connect to existing tmux sessions associated with the workspace when VS Code opens. |
+| `tmux-integrated.automaticRename` | `false` | Allow tmux to rename windows automatically from the foreground process. The current tmux window name is preserved when disabled. |
 | `tmux-integrated.terminalLocation` | `panel` | Where to open tmux terminal tabs: `panel` (terminal panel) or `editor` (editor area as tabs). |
 | `tmux-integrated.pinTerminals` | `true` | When `terminalLocation` is `editor`, pin terminal tabs via VS Code's `pinEditor` command. |
 

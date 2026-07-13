@@ -51,6 +51,9 @@ a persistent backing store via tmux **control mode** (`tmux -CC`).
 * **One tmux window per VS Code terminal tab** (1:1 mapping, like iTerm2).
 * **One tmux pane per window.** Splits are not supported — VS Code's terminal
   API has no split-pane abstraction.
+* **Window creation is synchronized.** A tmux `%window-add` notification creates
+  a matching VS Code terminal unless that window is already attached or queued
+  for adoption.
 
 ## Source layout
 
@@ -143,10 +146,9 @@ open(initialDimensions)
   |     * else: client.newWindow(...)  (creation path)
   |-- record windowId, paneId, tabWindowIndex
   |-- subscribe: 'output' / 'window-close' / 'window-renamed' / 'tmux-exit'
-  |-- query #{automatic-rename}, decide tab label (pickTerminalTabTitle)
-  |-- set-option -w automatic-rename off
+  |-- set automatic-rename from tmux-integrated.automaticRename (default off)
+  |-- query #{window_name} and emit it unchanged
   |-- emit initial tab name
-  |-- if (current name in tmux ≠ chosen label) → rename-window
   |-- resizeWindowForClient(initialDimensions)
   |-- if adoption: capture-pane snapshot + restore cursor position
 ```
@@ -169,20 +171,18 @@ explicitly preserved so they can be re-adopted next launch.
 ## Tab title model (`windowTitle.ts`)
 
 A tmux window has both a `#{window_name}` and an `#{automatic-rename}` flag.
-When automatic-rename is on, tmux owns the title (it changes to whatever
-process is in the foreground — `zsh`, `bash`, `vim`, …). When it is off, the
-current name is treated as intentional (set by user or by us) and shown
-verbatim.
+The window name is authoritative and is shown verbatim in VS Code:
 
 ```text
-automatic-rename=on  → label = "tmux:<window_index>"
-automatic-rename=off, name non-empty → label = name
-automatic-rename=off, name empty     → label = "tmux:<window_index>"
+name non-empty → label = name
+name empty     → label = "tmux:<window_index>"
 ```
 
-After we settle on a label in `open()`, the extension immediately turns
-automatic-rename off and (if needed) issues `rename-window` so tmux's notion
-of the title matches what VS Code shows.
+`tmux-integrated.automaticRename` controls tmux's process-driven renaming and
+defaults to off. Changing this option never replaces the current window name.
+OSC 0/2 title changes are read back from tmux's `#{pane_title}`, promoted to the
+tmux window name, and then reflected in VS Code through the normal
+`%window-renamed` notification.
 
 The bidirectional rename sync works as follows:
 
