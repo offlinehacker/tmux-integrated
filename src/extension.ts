@@ -27,6 +27,10 @@ interface AttachWindowItem extends vscode.QuickPickItem {
     name: string;
 }
 
+interface NewTerminalCommandArgs {
+    command?: string;
+}
+
 let client: TmuxControlClient | null = null;
 let statusBar: vscode.StatusBarItem | null = null;
 let outputChannel: vscode.OutputChannel | null = null;
@@ -348,11 +352,12 @@ function registerTerminalProfile(context: vscode.ExtensionContext): void {
 
 function registerCommands(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
-        vscode.commands.registerCommand('tmux-integrated.newTerminal', async () => {
+        vscode.commands.registerCommand('tmux-integrated.newTerminal', async (args?: NewTerminalCommandArgs) => {
             const connected = await ensureClientConnected();
             if (!connected) { return; }
+            const initialCommand = typeof args?.command === 'string' ? args.command.trim() : '';
             const terminal = vscode.window.createTerminal(
-                buildTerminalOptions(),
+                buildTerminalOptions(undefined, initialCommand || undefined),
             );
             terminal.show();
             await maybePinTerminal(terminal);
@@ -550,6 +555,7 @@ async function ensureClientConnectedImpl(): Promise<boolean> {
 
 function buildTerminalOptions(
     existingWindow?: AdoptableWindow,
+    initialCommand?: string,
 ): vscode.ExtensionTerminalOptions {
     const cfg = vscode.workspace.getConfiguration('tmux-integrated');
     const shell = (cfg.get<string>('shell') || process.env.SHELL || '/bin/bash') || undefined;
@@ -559,6 +565,7 @@ function buildTerminalOptions(
         defaultStartDirectory,
         collectVscodeEnvVars(),
         shell || undefined,
+        initialCommand,
         getWindowNameSyncDirection,
         existingWindow,
         {

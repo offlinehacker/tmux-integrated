@@ -122,7 +122,8 @@ There are three doorways into "create a VS Code terminal tab":
    * `bootstrapWindow` (just-created session's first window)
    * the next entry from `windowsToAdopt`
    * `client.newWindow(...)` — i.e. *create a fresh tmux window*.
-2. **`tmux-integrated.newTerminal` command**. Always calls `newWindow`.
+2. **`tmux-integrated.newTerminal` command**. Always calls `newWindow`. An
+   optional keybinding `command` argument is sent after the pane is ready.
 3. **`tmux-integrated.attachWindow` command**. Pops a quick-pick over
    `listWindows()` minus already-attached windows, then creates a VS Code
    terminal that adopts the chosen window.

@@ -186,6 +186,7 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         private readonly startDirectory: string | undefined,
         private readonly extraEnv: Record<string, string>,
         private readonly shell: string | undefined,
+        private readonly initialCommand: string | undefined,
         private readonly getWindowNameSyncDirection: () => WindowNameSyncDirection,
         existingWindow?: {
             windowId: string;
@@ -371,6 +372,10 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
                     initialDimensions.columns,
                     initialDimensions.rows,
                 ).catch((err) => this.log(`resize warning (non-fatal): ${err}`));
+            }
+
+            if (this.initialCommand) {
+                this.sendKeysInput(`${this.initialCommand}\r`);
             }
 
 

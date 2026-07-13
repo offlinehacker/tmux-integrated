@@ -236,6 +236,19 @@ Every release also attaches a `.vsix` to its
 | `tmux: New tmux Terminal` | Open a new terminal backed by a new tmux window |
 | `tmux: Attach to tmux Window` | Pick an existing tmux window from the session |
 
+`tmux-integrated.newTerminal` accepts an optional `command` argument for
+keybindings that should launch a program after creating the tmux window:
+
+```jsonc
+{
+  "key": "ctrl+shift+o",
+  "command": "tmux-integrated.newTerminal",
+  "args": {
+    "command": "opencode"
+  }
+}
+```
+
 ## How it works
 
 The extension uses tmux's **control mode** (`-CC`) — the same approach used by
