@@ -542,14 +542,23 @@ function buildTerminalOptions(
  * Pin a terminal's editor tab if terminalLocation is 'editor' and pinTerminals is enabled.
  * VS Code's TerminalEditorService already sets pinned:true on openEditor, but this is a
  * safety net for cases where the pin doesn't take effect (e.g. timing races on reconnect).
+ *
+ * The VS Code pinEditor command targets the currently active editor tab, so we must
+ * focus the terminal (which makes its editor tab active) before pinning. A small delay
+ * after show() ensures the editor service has processed the focus change.
  */
 async function maybePinTerminal(terminal: vscode.Terminal): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('tmux-integrated');
     const location = cfg.get<string>('terminalLocation', 'panel');
     const pin = cfg.get<boolean>('pinTerminals', true);
     if (location === 'editor' && pin) {
-        // Focus the terminal so pinEditor targets the right editor tab
+        // Focus the terminal so its editor tab becomes the active editor
         terminal.show();
+        // Wait for the editor service to process the focus change.
+        // Without this delay, pinEditor can target the wrong tab (e.g. the
+        // previously active editor) when multiple terminals are created in
+        // quick succession (e.g. auto-connect restoring several windows).
+        await new Promise<void>(resolve => setTimeout(resolve, 100));
         await vscode.commands.executeCommand('workbench.action.pinEditor');
     }
 }
