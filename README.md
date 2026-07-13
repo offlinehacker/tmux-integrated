@@ -212,7 +212,7 @@ releases use **odd** minor versions (`0.3.x`, `0.5.x`, …).
 ### Manual install
 
 Every release also attaches a `.vsix` to its
-[GitHub release](https://github.com/pcassidy75/tmux-integrated/releases)
+[GitHub release](https://github.com/offlinehacker/tmux-integrated/releases)
 (beta builds are marked as pre-releases). Download it and run
 **Extensions: Install from VSIX…** from the command palette.
 

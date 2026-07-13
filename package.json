@@ -3,12 +3,16 @@
   "displayName": "tmux-integrated",
   "description": "Seamless tmux integration for VS Code terminals — persistent sessions, code-command support, and Copilot compatibility",
   "version": "0.3.0",
-  "publisher": "pcassidy75",
+  "publisher": "offlinehacker",
   "license": "GPL-3.0-only",
   "icon": "images/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pcassidy75/tmux-integrated"
+    "url": "https://github.com/offlinehacker/tmux-integrated"
+  },
+  "homepage": "https://github.com/offlinehacker/tmux-integrated#readme",
+  "bugs": {
+    "url": "https://github.com/offlinehacker/tmux-integrated/issues"
   },
   "engines": {
     "vscode": "^1.80.0"
