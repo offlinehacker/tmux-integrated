@@ -2,7 +2,7 @@
   "name": "tmux-integrated",
   "displayName": "tmux-integrated",
   "description": "Seamless tmux integration for VS Code terminals — persistent sessions, code-command support, and Copilot compatibility",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "offlinehacker",
   "license": "GPL-3.0-only",
   "icon": "images/icon.png",
@@ -93,7 +93,12 @@
         },
         "tmux-integrated.syncWindowNames": {
           "type": "string",
-          "enum": ["bidirectional", "tmuxToVscode", "vscodeToTmux", "off"],
+          "enum": [
+            "bidirectional",
+            "tmuxToVscode",
+            "vscodeToTmux",
+            "off"
+          ],
           "default": "bidirectional",
           "description": "Control synchronization between tmux window names and VS Code terminal tab names."
         },
@@ -109,7 +114,10 @@
         },
         "tmux-integrated.terminalLocation": {
           "type": "string",
-          "enum": ["panel", "editor"],
+          "enum": [
+            "panel",
+            "editor"
+          ],
           "default": "panel",
           "description": "Where to open tmux terminal tabs. 'editor' opens them as editor tabs, 'panel' opens them in the terminal panel."
         },
