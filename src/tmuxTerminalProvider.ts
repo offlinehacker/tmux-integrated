@@ -386,19 +386,32 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
                 const snapshot = await this.client.capturePane(paneId, {
                     includeEscapeSequences: true,
                     startLine: '-',
+                }).catch((err) => {
+                    this.log(`capture-pane warning (non-fatal): ${err}`);
+                    return '';
                 });
-                const cursor = await this.client.getPaneCursor(paneId);
+                const cursor = await this.client.getPaneCursor(paneId).catch((err) => {
+                    this.log(`cursor restore warning (non-fatal): ${err}`);
+                    return null;
+                });
                 if (snapshot) {
                     this.writeEmitter.fire(snapshot.replace(/\n/g, '\r\n'));
                 }
-                this.writeEmitter.fire(`\x1b[${cursor.y + 1};${cursor.x + 1}H`);
+                if (cursor) {
+                    this.writeEmitter.fire(`\x1b[${cursor.y + 1};${cursor.x + 1}H`);
+                }
             }
 
         } catch (err) {
             this.log(`open() ERROR: ${err}`);
             if (this.existingWindow?.windowId) {
+                // A failed VS Code attachment must never destroy the tmux
+                // window that predated it. Also make it available to the
+                // attach picker again before closing this terminal.
+                this.windowClosedByTmux = true;
                 this.lifecycleHooks.onWindowAttachFailed?.(this.existingWindow.windowId);
             }
+            this.cleanup();
             this.writeEmitter.fire(`\r\ntmux-integrated: error creating tmux window: ${err}\r\n`);
             this.closeEmitter.fire(1);
         }
