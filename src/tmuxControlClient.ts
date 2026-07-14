@@ -394,17 +394,17 @@ export class TmuxControlClient extends EventEmitter {
 
     async listWindows(): Promise<TmuxWindow[]> {
         const res = await this.sendCommand(
-            'list-windows -F "#{window_id}|#{window_index}|#{window_name}|#{pane_id}|#{window_active}"',
+            'list-windows -F "#{window_id}|#{window_index}|#{pane_id}|#{window_active}|#{window_name}"',
         );
         return res
             .filter((l) => l.trim())
             .map((l) => {
                 const parts = l.split('|');
-                const [id, indexStr, name, paneId, active] = parts;
+                const [id, indexStr, paneId, active, ...nameParts] = parts;
                 return {
                     id,
                     index: Number.parseInt(indexStr ?? '0', 10),
-                    name,
+                    name: nameParts.join('|'),
                     paneId,
                     active: active?.trim() === '1',
                 };
