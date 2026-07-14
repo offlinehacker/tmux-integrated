@@ -164,10 +164,10 @@ named keys for known sequences, `send-keys -lt` for safe literal runs, and
 `refresh-client -C <cols>,<rows>` (no per-pane resize — see
 `resizeWindowForClient` for the rationale).
 
-`close()` either lets tmux own the lifecycle (when it was tmux that closed
-the window) or, after a 300 ms grace period, sends `kill-window` — but only
-if the extension isn't deactivating. On VS Code shutdown the windows are
-explicitly preserved so they can be re-adopted next launch.
+`close()` only detaches the renderer. `onDidCloseTerminal` sends `kill-window`
+when VS Code reports `TerminalExitReason.User`; shutdown, reload, extension
+disposal, process exits, and unknown reasons preserve the tmux window for
+re-adoption.
 
 ## Tab title model (`windowTitle.ts`)
 

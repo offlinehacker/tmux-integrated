@@ -6,8 +6,8 @@
 *   handleInput() → forwards key data through tmux control commands.
  *   setDimensions() → updates the control client window size for the tmux
  *                     window shown in this VS Code terminal.
- *   close()       → kills the tmux window (unless VS Code is shutting down,
- *                   in which case the window survives for later re-adoption).
+ *   close()       → detaches this renderer; extension.ts decides whether an
+ *                   explicit user close should also kill the tmux window.
  */
 
 import * as vscode from 'vscode';
@@ -153,7 +153,6 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         windowIndex?: number;
         name?: string;
     } | null;
-    private readonly isDeactivating: () => boolean;
     private readonly lifecycleHooks: {
         onWindowAttached?: (windowId: string) => void;
         onWindowDetached?: (windowId: string) => void;
@@ -199,11 +198,9 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
             onWindowDetached?: (windowId: string) => void;
             onWindowAttachFailed?: (windowId: string) => void;
         },
-        isDeactivating?: () => boolean,
         log?: (message: string) => void,
     ) {
         this.existingWindow = existingWindow ?? null;
-        this.isDeactivating = isDeactivating ?? (() => false);
         this.lifecycleHooks = lifecycleHooks ?? {};
         this.log = log ?? (() => {});
     }
@@ -211,6 +208,16 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
     /** Tmux window id (`@…`) after `open()` attaches; used to align session active window with VS Code tab focus. */
     getAttachedTmuxWindowId(): string | null {
         return this.windowId;
+    }
+
+    /** Kill the backing window after VS Code confirms an explicit user close. */
+    async killAttachedWindow(): Promise<void> {
+        if (this.windowClosedByTmux || !this.windowId || !this.client.isConnected()) {
+            return;
+        }
+        await this.client.killWindow(this.windowId).catch((err) => {
+            this.log(`kill-window warning (non-fatal): ${err}`);
+        });
     }
 
     /**
@@ -456,28 +463,7 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
     }
 
     close(): void {
-        // Capture state before cleanup clears listeners.
-        const windowId = this.windowId;
-        const shouldConsiderKill = !this.windowClosedByTmux
-            && !!windowId
-            && this.client.isConnected();
-
         this.cleanup();
-
-        if (shouldConsiderKill) {
-            // Defer briefly so that VS Code's shutdown path can call
-            // deactivate() and disconnect the client first.  This
-            // prevents killing tmux windows when VS Code exits —
-            // persistence is preserved.
-            const client = this.client;
-            const isDeactivating = this.isDeactivating;
-            setTimeout(() => {
-                if (!isDeactivating() && client.isConnected()) {
-                    client.sendCommand(`kill-window -t ${windowId}`)
-                        .catch(() => {});
-                }
-            }, 300);
-        }
     }
 
     // -----------------------------------------------------------------------
