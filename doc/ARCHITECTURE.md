@@ -151,7 +151,7 @@ open(initialDimensions)
   |-- query #{window_name} and emit it unchanged
   |-- emit initial tab name
   |-- resizeWindowForClient(initialDimensions)
-  |-- if adoption: capture-pane snapshot + restore cursor position
+  |-- if adoption: capture-pane snapshot + restore cursor and mouse modes
 ```
 
 `handleInput()` is implemented via `send-keys` using the same hybrid strategy

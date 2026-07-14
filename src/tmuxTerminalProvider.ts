@@ -400,6 +400,7 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
                 if (cursor) {
                     this.writeEmitter.fire(`\x1b[${cursor.y + 1};${cursor.x + 1}H`);
                 }
+                await this.restorePaneMouseModes(paneId);
             }
 
         } catch (err) {
@@ -733,6 +734,36 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         await this.client
             .sendCommand(`rename-window -t ${this.windowId} ${shellescape(title)}`, CommandFlags.TolerateErrors)
             .catch(() => {});
+    }
+
+    private async restorePaneMouseModes(paneId: string): Promise<void> {
+        const modes = await this.client.getPaneMouseModes(paneId).catch((err) => {
+            this.log(`mouse mode restore warning (non-fatal): ${err}`);
+            return null;
+        });
+        if (!modes) {
+            return;
+        }
+
+        const enabled: number[] = [];
+        if (modes.all) {
+            enabled.push(1003);
+        } else if (modes.button) {
+            enabled.push(1002);
+        } else if (modes.standard) {
+            enabled.push(1000);
+        }
+        if (modes.utf8) {
+            enabled.push(1005);
+        }
+        if (modes.sgr) {
+            enabled.push(1006);
+        }
+
+        this.writeEmitter.fire('\x1b[?1000;1002;1003;1005;1006l');
+        if (enabled.length > 0) {
+            this.writeEmitter.fire(`\x1b[?${enabled.join(';')}h`);
+        }
     }
 
     private emitNameIfChanged(label: string, source: 'tmux' | 'init'): void {

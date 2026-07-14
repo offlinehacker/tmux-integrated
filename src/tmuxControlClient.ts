@@ -61,6 +61,14 @@ export interface TmuxPaneCursor {
     y: number;
 }
 
+export interface TmuxPaneMouseModes {
+    standard: boolean;
+    button: boolean;
+    all: boolean;
+    utf8: boolean;
+    sgr: boolean;
+}
+
 export class TmuxControlClient extends EventEmitter {
     private pty: IPty | null = null;
     private gateway: TmuxGateway | null = null;
@@ -465,6 +473,22 @@ export class TmuxControlClient extends EventEmitter {
         return {
             x: Number.parseInt(xText ?? '0', 10) || 0,
             y: Number.parseInt(yText ?? '0', 10) || 0,
+        };
+    }
+
+    /** Mouse reporting modes currently enabled by the program in this pane. */
+    async getPaneMouseModes(paneId: string): Promise<TmuxPaneMouseModes> {
+        const res = await this.sendCommand(
+            `display-message -p -t ${paneId} ` +
+            '"#{mouse_standard_flag}|#{mouse_button_flag}|#{mouse_all_flag}|#{mouse_utf8_flag}|#{mouse_sgr_flag}"',
+        );
+        const [standard, button, all, utf8, sgr] = (res[0] ?? '').trim().split('|');
+        return {
+            standard: standard === '1',
+            button: button === '1',
+            all: all === '1',
+            utf8: utf8 === '1',
+            sgr: sgr === '1',
         };
     }
 
