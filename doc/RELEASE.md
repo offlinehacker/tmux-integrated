@@ -106,7 +106,9 @@ after which the beta train opens at `0.3.0`.
 ## Manual recovery
 
 If CI fails after the tag is pushed, fix the workflow or tokens and re-run the
-release job from GitHub Actions, or publish locally. For a stable build:
+release job from GitHub Actions. To retry a tag that did not create a run, use
+the workflow's **Run workflow** action and enter the existing tag. Alternatively,
+publish locally. For a stable build:
 
 ```bash
 npm ci
