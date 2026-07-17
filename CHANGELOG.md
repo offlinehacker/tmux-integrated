@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-17
+
+### Changed
+
+- Send editor context to latest tmux terminal
+- Preserve tmux windows across reload
+- Restore pane mouse modes after reload
+- Preserve delimiters in tmux window names
+- Preserve tmux windows when reload adoption fails
+- Publish extension under offlinehacker
+- Launch commands in new tmux terminals
+- Add configurable window synchronization
+- Synchronize tmux window names and creation
+- Improve pinning reliability + update README with editor-area docs
+- Add editor-area terminal support with pinning
+
 ## [0.2.0] - 2026-05-29
 
 ### Changed
