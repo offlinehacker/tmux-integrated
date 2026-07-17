@@ -73,7 +73,7 @@ activate()
   |-- create OutputChannel + StatusBar
   |-- registerTerminalRenameSync()    // wire onDidOpen/Close/ChangeActive
   |-- registerTerminalProfile()       // contributes "tmux-integrated" profile
-  |-- registerCommands()              // newTerminal / attachWindow / renameTerminal
+  |-- registerCommands()              // terminal lifecycle and editor-context commands
   |-- if autoConnect && session exists:
         autoConnectExistingSession()  // fire-and-forget
 ```
@@ -138,6 +138,11 @@ The pty is also pushed onto `pendingTerminalPtys` so that
 `vscode.Terminal` with its `TmuxTerminal` instance (used to detect built-in
 "Rename…" actions and to align the tmux active window with the VS Code tab
 focus).
+
+Successfully attached PTYs are also kept in attachment order. The editor-context
+command formats the active editor using `editorContextTemplate`, sends it through
+the newest still-attached PTY's normal `send-keys` path, and focuses the matching
+VS Code terminal. Detaching the newest PTY falls back to the previous one.
 
 ## `TmuxTerminal.open()` — what happens when a tab is created
 

@@ -210,6 +210,15 @@ export class TmuxTerminal implements vscode.Pseudoterminal {
         return this.windowId;
     }
 
+    /** Insert text into the attached pane without submitting it. */
+    sendText(text: string): boolean {
+        if (!this.paneId || !this.client.isConnected()) {
+            return false;
+        }
+        this.sendKeysInput(text);
+        return true;
+    }
+
     /** Kill the backing window after VS Code confirms an explicit user close. */
     async killAttachedWindow(): Promise<void> {
         if (this.windowClosedByTmux || !this.windowId || !this.client.isConnected()) {

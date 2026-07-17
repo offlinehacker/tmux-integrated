@@ -58,6 +58,19 @@
         "title": "Rename tmux Terminal",
         "category": "tmux",
         "icon": "$(edit)"
+      },
+      {
+        "command": "tmux-integrated.sendEditorContext",
+        "title": "Send Editor Context to tmux Terminal",
+        "category": "tmux"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "tmux-integrated.sendEditorContext",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k",
+        "when": "editorTextFocus"
       }
     ],
     "menus": {
@@ -125,6 +138,11 @@
           "type": "boolean",
           "default": true,
           "description": "When terminalLocation is 'editor', pin terminal tabs so they are not replaced by new file tabs. Uses VS Code's built-in pinEditor command."
+        },
+        "tmux-integrated.editorContextTemplate": {
+          "type": "string",
+          "default": "@%{relative_path}%{line_range}",
+          "markdownDescription": "Template inserted by **Send Editor Context to tmux Terminal**. Available placeholders: `%{relative_path}`, `%{line_start}`, `%{line_end}`, `%{line_range}`, and `%{content}`. `%{content}` is the selection, or the full document when nothing is selected; `%{line_range}` matches opencode's `#L1-2` syntax and is empty without a selection."
         }
       }
     }

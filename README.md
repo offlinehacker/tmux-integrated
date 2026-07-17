@@ -228,6 +228,7 @@ Every release also attaches a `.vsix` to its
 | `tmux-integrated.syncWindowCreation` | `true` | Automatically open a matching VS Code terminal when a window is created externally in tmux. |
 | `tmux-integrated.terminalLocation` | `panel` | Where to open tmux terminal tabs: `panel` (terminal panel) or `editor` (editor area as tabs). |
 | `tmux-integrated.pinTerminals` | `true` | When `terminalLocation` is `editor`, pin terminal tabs via VS Code's `pinEditor` command. |
+| `tmux-integrated.editorContextTemplate` | `@%{relative_path}%{line_range}` | Template sent from the editor to the last opened tmux terminal. Supports `%{relative_path}`, `%{line_start}`, `%{line_end}`, `%{line_range}`, and `%{content}`. |
 
 ## Commands
 
@@ -235,6 +236,8 @@ Every release also attaches a `.vsix` to its
 |---|---|
 | `tmux: New tmux Terminal` | Open a new terminal backed by a new tmux window |
 | `tmux: Attach to tmux Window` | Pick an existing tmux window from the session |
+| `tmux: Rename tmux Terminal` | Rename the active tmux window and terminal tab |
+| `tmux: Send Editor Context to tmux Terminal` | Insert editor context into the most recently opened tmux terminal and focus it (`Cmd+Alt+K` on macOS, `Ctrl+Alt+K` elsewhere) |
 
 `tmux-integrated.newTerminal` accepts an optional `command` argument for
 keybindings that should launch a program after creating the tmux window:
@@ -247,6 +250,20 @@ keybindings that should launch a program after creating the tmux window:
     "command": "opencode"
   }
 }
+```
+
+### Editor context templates
+
+`tmux-integrated.sendEditorContext` inserts text without submitting it. By
+default it sends `@path/to/file#L1-2` for a selection, matching opencode's file
+reference format, or `@path/to/file` when there is no selection.
+
+Customize `tmux-integrated.editorContextTemplate` to send literal source text.
+`%{content}` expands to the current selection, or the full document when the
+selection is empty. For example:
+
+```jsonc
+"tmux-integrated.editorContextTemplate": "%{relative_path}:%{line_start}-%{line_end}\n%{content}"
 ```
 
 ## How it works

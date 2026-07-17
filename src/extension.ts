@@ -6,7 +6,7 @@
  *   2. Connects to a per-workspace tmux session using control mode (-CC).
  *   3. Updates the session environment with the current VS Code IPC variables
  *      so that `code <file>` works in new tmux windows.
- *   4. Registers a "tmux" terminal profile and two commands.
+ *   4. Registers the "tmux" terminal profile and extension commands.
  *
  * Each VS Code terminal tab maps 1:1 to a tmux window (like iTerm2's tmux
  * integration). An explicit user close kills the corresponding window, while
@@ -65,6 +65,7 @@ const pendingWindowAddIds = new Set<string>();
 const terminalPtyByTerminal = new Map<vscode.Terminal, TmuxTerminal>();
 const lastObservedTerminalNames = new Map<vscode.Terminal, string>();
 const pendingTerminalPtys: TmuxTerminal[] = [];
+const attachedTerminalPtys: TmuxTerminal[] = [];
 let activeTmuxWindowId: string | null = null;
 let pendingUserTerminalFocus: boolean = false;
 
@@ -100,6 +101,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             terminalPtyByTerminal.clear();
             lastObservedTerminalNames.clear();
             pendingTerminalPtys.length = 0;
+            attachedTerminalPtys.length = 0;
             pendingWindowAddIds.clear();
             activeTmuxWindowId = null;
             inFlightConnect = null;
@@ -173,6 +175,7 @@ export function deactivate(): void {
     terminalPtyByTerminal.clear();
     lastObservedTerminalNames.clear();
     pendingTerminalPtys.length = 0;
+    attachedTerminalPtys.length = 0;
     pendingWindowAddIds.clear();
     activeTmuxWindowId = null;
     inFlightConnect = null;
@@ -389,7 +392,58 @@ function registerCommands(context: vscode.ExtensionContext): void {
             if (newName === undefined) { return; }
             await pty.renameWindow(newName);
         }),
+
+        vscode.commands.registerCommand('tmux-integrated.sendEditorContext', () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) {
+                vscode.window.showWarningMessage('tmux-integrated: no active editor to send.');
+                return;
+            }
+
+            const pty = attachedTerminalPtys.at(-1);
+            if (!pty) {
+                vscode.window.showWarningMessage('tmux-integrated: no open tmux terminal to receive editor context.');
+                return;
+            }
+
+            const terminal = vscode.window.terminals.find((candidate) =>
+                (terminalPtyByTerminal.get(candidate) ?? getTmuxPtyFromTerminal(candidate)) === pty,
+            );
+            if (!terminal) {
+                vscode.window.showWarningMessage('tmux-integrated: could not find the last opened tmux terminal.');
+                return;
+            }
+
+            const text = formatEditorContext(editor);
+            if (!text || !pty.sendText(text)) {
+                vscode.window.showWarningMessage('tmux-integrated: could not send editor context to the tmux terminal.');
+                return;
+            }
+            terminal.show();
+        }),
     );
+}
+
+function formatEditorContext(editor: vscode.TextEditor): string {
+    const { document, selection } = editor;
+    const hasSelection = !selection.isEmpty;
+    const lineStart = hasSelection ? selection.start.line + 1 : 1;
+    const lineEnd = hasSelection ? selection.end.line + 1 : document.lineCount;
+    const lineRange = hasSelection
+        ? `#L${lineStart}${lineEnd === lineStart ? '' : `-${lineEnd}`}`
+        : '';
+    const values: Record<string, string> = {
+        relative_path: vscode.workspace.asRelativePath(document.uri),
+        line_start: String(lineStart),
+        line_end: String(lineEnd),
+        line_range: lineRange,
+        content: hasSelection ? document.getText(selection) : document.getText(),
+    };
+    const template = vscode.workspace
+        .getConfiguration('tmux-integrated')
+        .get<string>('editorContextTemplate', '@%{relative_path}%{line_range}');
+
+    return template.replace(/%\{(relative_path|line_start|line_end|line_range|content)\}/g, (_, key: string) => values[key]);
 }
 
 async function ensureClientConnected(): Promise<boolean> {
@@ -575,9 +629,18 @@ function buildTerminalOptions(
         {
             onWindowAttached: (windowId) => {
                 attachedWindowIds.add(windowId);
+                const previousIndex = attachedTerminalPtys.indexOf(pty);
+                if (previousIndex >= 0) {
+                    attachedTerminalPtys.splice(previousIndex, 1);
+                }
+                attachedTerminalPtys.push(pty);
             },
             onWindowDetached: (windowId) => {
                 attachedWindowIds.delete(windowId);
+                const index = attachedTerminalPtys.indexOf(pty);
+                if (index >= 0) {
+                    attachedTerminalPtys.splice(index, 1);
+                }
             },
         },
         log,
